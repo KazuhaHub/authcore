@@ -1008,3 +1008,355 @@ either report that preceded this one.
 - `git log --oneline --all | grep 2137c0f` in this repo, confirming the
   pinned `authcore` commit is exactly the one immediately after `audit` was
   removed (`2137c0f refactor: remove audit (#8)`).
+
+## saml — Report-Portal
+
+Fourth and — per the plan this line of work was scoped to — last large migration onto `authcore`.
+Local branch `refactor/authcore-saml` in RP's repo (not pushed, no PR opened, nothing merged), on
+top of `main`@`2f865404` (the commit that merged `passkey`, #11), pinned to
+`go get github.com/KazuhaHub/authcore@main` resolving to pseudo-version
+`v0.0.0-20260917134832-99368735839d` = commit `9936873` — the current tip of this repo's `main`,
+confirmed with `git log --oneline -1 9936873` in this repo. Scope: replace
+`internal/app/saml.go`'s SAML 2.0 Service Provider (built directly on `crewjam/saml`) with one built
+on `authcore/saml`, without changing any of its 11 external call sites (3 HTTP handlers in
+`server.go`, `samlEntityID`/`samlACSURL`/`generateSPKeypair`/`parseIdPMetadata` called from
+`sso_admin.go`, and the `SPCertPEM`/`SPKeyEnc`/`SPCertNotAfter` fields `sso_admin.go`/`sso_provider.go`
+read and write).
+
+### A note on method
+
+Written by a different party than the migration it reviews, following the same rule the `audit` and
+`passkey` reviews established: every claim below was reproduced directly against source or a test
+this report wrote itself, not accepted from the migration's own recon or implementation report.
+Concretely — `git diff main --stat` and `git show main:internal/app/saml.go` read against the actual
+(uncommitted) working tree; every one of `authcore/saml`'s eight source files
+(`provider.go`, `validate.go`, `assertion.go`, `replay.go`, `rawxml.go`, `inflate.go`, `errors.go`)
+read in full, not sampled from its package doc; `crewjam/saml@v0.5.1`'s own
+`ParseXMLResponse`/`validateRequestID` read directly to confirm what it does and does not check, both
+to verify the migration's "RP had a real gap" claim and to verify `AllowIDPInitiated`'s behavior is
+unchanged; four new tests written independently of the migration's own test file, none of them
+reusing its helpers' logic even where a helper of the same shape was reinvented; the arithmetic
+behind every line-count claim in the migration's own report re-derived from `sed`/`wc -l` on exact
+line ranges rather than trusted (see Glue-code accounting: the report's line counts turned out
+accurate, but only after this review found and corrected its own first attempt at reproducing them);
+and the full suite (`go build`, `go vet`, `gofmt -l`, `govulncheck ./...`,
+`go test ./... -race -count=1`) run twice from a clean invocation, with this report's own new test
+file present for the second run.
+
+One quantitative claim in the migration's own report does not survive this process unchanged — see
+P1 #3 below. It is a correction, not a retraction: the underlying design choice is right, the
+report's characterization of it as "carried over unchanged" is off by four minutes in one clamped
+edge case, and this report explains why that is not a security regression.
+
+### Bottom line
+
+**Yes, keep it.** This is the clearest "the consumer stops needing to get something right" case of
+the four: the specific thing RP no longer needs to get right is *the order and completeness of the
+pre-signature structural checks on an untrusted SAML Response* — Destination-absence-on-unsigned,
+weak-signature-algorithm, encrypted-assertion, and (new) assertion-count all used to be RP's own
+five-step sequence to get in the right order with nothing skipped; now it is one call
+(`provider.ValidateResponse`) whose order and completeness `authcore/saml`'s own test suite locks
+down. The specific failure mode is named, not hand-waved: `crewjam/saml@v0.5.1`'s own
+`ParseXMLResponse` (`service_provider.go`) validates every `Assertion`/`EncryptedAssertion` element
+it finds independently and returns "the first one that validates" — its own comment admits this is
+"less than fully correct" — and RP's pre-migration `saml.go` had **zero** code counting assertions
+(confirmed by `grep -c` over `git show main:internal/app/saml.go`: no match for `assertionCount`,
+"len(response.Assertions" or any variant). `authcore/saml` closes this unconditionally, in a
+streaming pre-signature scan (`rawxml.go`'s `scanResponseShape`), before `crewjam` ever sees the
+document. Production code is close to flat (596 → 593, **−3**, confirmed by direct `wc -l`, not
+trusted from the migration's own count); the cost lands entirely in tests (335 → 400, **+61**,
+likewise independently re-derived — see Glue-code accounting for where the migration's own report's
+arithmetic needed correcting to actually land on this number). Net: **+58** across production and
+test code combined, the smallest net cost of any migration in this line of work except `geoip`'s
+outright win.
+
+The one real, non-cosmetic concession: `saml.go` no longer has a clean "swap the internals, keep the
+facade" story. `authcore/saml.Provider.NewAuthnRequest` has no `ForceAuthn` option, so step-up SSO
+(the SAML half of ADR 0023's re-authentication story — see `stepup_sso.go`'s own doc comment, which
+this report read directly, not paraphrased from RP's SAML report) has to bypass `authcore/saml`
+entirely and build the `AuthnRequest` straight against `crewjam/saml`, in the one file
+(`saml_crewjam.go`) that imports it. This is confirmed load-bearing, not a hypothetical: this
+report's own `TestVerifySAMLStepUpActuallySetsForceAuthn` decodes the actual redirect URL an
+IdP would receive and confirms `ForceAuthn="true"` is on the wire for the step-up path and absent
+from the ordinary path — the migration's own test suite never checked this at the wire level. See P1
+#1.
+
+### P0 — none
+
+No functional regression, no weakened check, no silent capability loss found anywhere in this
+review. Every candidate this report went looking for (below) resolved to either "confirmed correct,
+just untested" or "a real but pre-existing/cosmetic gap," never to "broken."
+
+### P1 — worth doing before this pattern (facade file + one crewjam-direct escape hatch) repeats
+
+#### The step-up `ForceAuthn` path — this migration's single riskiest line — had zero test coverage proving it reaches the wire, in either the shipped suite or the migration's own new tests
+
+Confirmed by `grep -n "ForceAuthn" internal/app/*_test.go` before this report added one: the only
+hits were in `saml_crewjam.go`'s own source comments. `TestAuthnRequestDoesNotAskForATransientNameID`
+(the migration's own test, kept from before) decodes a redirect URL and checks `ForceAuthn` is
+**absent** — but only for the ordinary, non-step-up path (`provider.NewAuthnRequest`); nothing
+exercised `samlMaterial.forceAuthnRedirect` at all. Given the migration's own report calls this the
+one place `authcore/saml`'s API gap forces a real, non-cosmetic workaround, shipping it with no test
+proving the workaround actually works — as opposed to compiling and returning *a* redirect URL that
+silently lacks `ForceAuthn` — is the single highest-value gap in the whole migration. This report's
+`TestVerifySAMLStepUpActuallySetsForceAuthn` (`internal/app/saml_verification_test.go`) closes it: it
+decodes both the ordinary and step-up redirect URLs via `saml.DecodeRedirectMessage` and asserts
+`ForceAuthn="true"` is present on exactly the step-up one, and that the AuthnRequest's own wire `ID`
+matches what `forceAuthnRedirect` returns (so the ACS's `InResponseTo` check would actually match).
+Recommend folding this test (or one like it) into the migration's own permanent suite rather than
+leaving it in a file named for this review.
+
+#### Two branches of `samlFailureReason`'s six-case switch have no test anywhere, direct or end-to-end
+
+`ErrReplayed -> "saml_replay"` and `ErrDuplicateAttribute -> "saml_attributes"` are the two.
+Confirmed by `grep -n "samlFailureReason" internal/app/*_test.go`: every existing call site tests one
+of the other four cases (`saml_destination`, `saml_weak_signature`, `saml_encrypted`,
+`saml_multiple_assertions`). Both untested branches are in fact correct — this report's
+`TestVerifySAMLFailureReasonCoversEveryBranch` confirms both directly — so this is a completeness
+gap, not a defect: a future edit that typo'd either case label (e.g. swapped which string goes with
+which sentinel) would compile, and nothing in the shipped suite would catch it. The full
+`ValidateResponse` -> `ErrDuplicateAttribute` path specifically cannot be tested without a genuinely
+signed assertion (the check lives in `assertionFromCrewjam`, which only runs after
+`crewjam.ParseXMLResponse` succeeds — unlike the four pre-signature checks, an unsigned document
+cannot reach it), which is almost certainly why the migration's suite stops short of it;
+`authcore/saml`'s own `TestValidateResponseXML_StrictAttributesEndToEnd` (confirmed by this report to
+exist and pass, `go test ./saml/... -run StrictAttributes -v` in this repo) already covers that half
+with a real signed assertion, so RP re-proving it end-to-end would be duplicate coverage — testing
+the switch's mapping directly, as this report's new test does, is the right-sized fix.
+
+#### The migration's own doc comment references a test that does not exist
+
+`saml_test.go`'s `TestSAMLClaimsFlattensAttributes` doc comment says "see `TestSAMLProviderConfigIsStrict`
+and `TestSAMLProviderRejectsDuplicateAttribute`" — the second name is not defined anywhere in the
+package (`grep -rn "RejectsDuplicateAttribute" internal/app/*.go` matches only this one comment).
+Harmless today, but it is exactly the kind of dangling pointer that misleads whoever tries to find
+that coverage next. Either write the test the comment promises (see P1 #2 for what that would take)
+or fix the comment to point at what actually covers the claim.
+
+#### The 30-minute replay-cache TTL clamp is not "carried over unchanged" — it is 4 minutes tighter in the clamped case, and the migration's own report's framing should say so
+
+Confirmed by reading both implementations' arithmetic directly and reproducing it in a throwaway Go
+program (not committed; the sole purpose was to check the claim, and its output is quoted below).
+Pre-migration `assertionExpiry` (`git show main:internal/app/saml.go`) clamps `latest` — the raw
+`Conditions.NotOnOrAfter`/`SubjectConfirmationData.NotOnOrAfter` value, **before** any margin is
+added — to `now+30min`, and only then adds `margin := crewjam.MaxClockSkew + time.Minute` (180s +
+60s = 4 minutes) on top, so the effective ceiling on a clamped entry is `now+34min`.
+`authcore/saml.Provider.expiryFor` computes its own `latest.Add(MaxClockSkew).Add(replayExpiryMargin)`
+first (same 4-minute margin — `crewjam.MaxClockSkew` is 180s, `authcore`'s own
+`DefaultReplayExpiryMargin` is 1 minute, so the totals match), and only *that already-margined* value
+is what `samlReplayCache.SeenOrAdd` clamps to `now+30min`. For a hostile/misconfigured assertion with
+a `NotOnOrAfter` 24 hours in the future:
+
+```
+old final expiry - now = 34m0s
+new final expiry - now = 30m0s
+```
+
+This is not a security regression — a *shorter* replay-cache retention window in the pathological
+case is, if anything, marginally more conservative on storage, and it does not touch the guard's
+actual security property (the row still outlives every acceptance window `crewjam` itself would ever
+honor in the non-pathological case, which is all this clamp exists to bound in the first place; the
+residual "IdP sets `NotOnOrAfter` absurdly far in the future" edge case behaves the same order of
+magnitude either way and predates this migration in both versions). It is a factual correction to the
+migration's report, which frames the clamp as "carried over unchanged" (`saml_replay.go`'s own doc
+comment says the same) when the actual number moved by four minutes. Worth one sentence in
+`saml_replay.go`'s doc comment so a future reader doing the same arithmetic this report just did does
+not conclude they found a bug.
+
+### P2 — noted, no action needed
+
+#### `authcore/saml.Config.ReplayCache.SeenOrAdd` receives only a bare assertion id, with no issuer — tenant isolation is entirely the caller's discipline, with nothing in the type system to enforce it
+
+Confirmed by reading `replay.go`'s `ReplayCache` interface directly: `SeenOrAdd(ctx, id string,
+expiresAt, now time.Time)` — no issuer, no tenant, no provider handle. RP's own `samlReplayCache`
+closes this correctly (scoped per call to the IdP entity id of the provider being served, never
+cached across requests — confirmed both by reading `samlProvider`/`samlConfig` directly and by this
+report's own `TestVerifySAMLCrossTenantReplayCacheIsIsolated`, which builds two real tenants through
+the actual `samlProvider -> samlConfig -> Config.ReplayCache` construction path, not a hand-built
+adapter, and confirms one tenant's assertion id cannot be forged as already-seen on the other's). This
+is the exact failure shape that killed `audit`'s AlertHub migration (a shared type with nowhere to put
+a tenant id) — it did not repeat here only because RP's call pattern (build a fresh `Provider` and a
+fresh `ReplayCache` adapter per request, never a package-level singleton) happens to leave no shared
+state for a tenant id to collide inside. Nothing in `authcore/saml`'s API requires that discipline;
+a future caller who cached a `Provider` (for the ostensibly reasonable reason that certificate
+parsing is not free) could reintroduce exactly this bug with authcore's blessing, since nothing there
+would tell them not to. Not asking for a change to `ReplayCache`'s shape — an issuer-aware signature
+would just move the discipline problem into a different shape — but a one-sentence doc-comment
+warning on `Config.ReplayCache` ("must not be shared across two Providers with different trust
+domains") would cost nothing and catch this before a future migration finds out the hard way.
+
+#### The replay cache is keyed by the IdP's entity id, not by RP's own per-tenant `Slug` — confirmed intentional and unchanged, not a new risk, despite reading like one at first glance
+
+Both `samlReplayCache{idpEntityID: m.meta.EntityID}` (post-migration) and the pre-migration
+`s.st.MarkAssertionSeen(sp.IDPMetadata.EntityID, ...)` key on the **IdP's** entity id, not RP's own
+`SSOProvider.Slug`. Two RP tenants who both point their own `SSOProvider` row at the literal same
+upstream IdP (e.g. two departments both configuring the same corporate Okta tenant) would therefore
+share one assertion-id keyspace between them. This reads, on first encounter, like the same class of
+bug P2 #1 above warns about — this report checked it specifically and confirmed it is not: SAML
+assertion IDs are IdP-generated, cryptographically random values (`xs:ID` per the SAML 2.0 core spec),
+never attacker-chosen and never meaningfully "reused" by a real IdP across two separate login
+ceremonies, so sharing that keyspace carries no practical collision risk, and it is exactly the
+pre-migration behavior (byte-identical key derivation, confirmed by diff), not something this
+migration changed. Recorded here only because P2 #1 makes it worth being explicit that this
+particular instance of "no tenant in the key" was checked and is fine.
+
+#### `authcore/saml`'s `MaxResponseBytes` (default 1 MiB, decoded XML) and RP's own `http.MaxBytesReader(w, r.Body, 512<<10)` (raw HTTP body, kept unchanged in `samlACS`) are redundant, not conflicting
+
+Confirmed by reading `provider.go`'s `DefaultMaxResponseBytes` and doing the base64 arithmetic
+directly: a 512 KiB raw POST body decodes to at most ~384 KiB, comfortably under authcore's 1 MiB
+decoded-XML ceiling, so RP's pre-existing cap (kept because `authcore/saml.ValidateResponse`'s own
+doc comment says explicitly it does not bound the HTTP body for the caller) never interacts badly
+with authcore's. Belt-and-suspenders, not friction.
+
+#### Per-provider SAML clock skew remains unfixable — pre-existing debt, unrelated to and unmoved by this migration
+
+`crewjam/saml`'s `MaxClockSkew` is a package-level `var`, not a per-`ServiceProvider` field, in both
+the version RP used directly before and the version `authcore/saml` wraps now. ADR 0023 already
+records this as accepted debt; `authcore/saml` inherits the same limitation (confirmed by reading
+`provider.go`/`validate.go` — nothing there overrides or wraps `crewjam.MaxClockSkew` per instance)
+and does not make it worse.
+
+### Capability audit (pre- vs. post-migration, RP saml)
+
+All confirmed by reading `git diff main -- internal/app/saml.go` directly and cross-checking against
+`authcore/saml`'s source, not by trusting the migration's own summary of either:
+
+| Behavior | Pre-migration | Post-migration | Match |
+|---|---|---|---|
+| Destination required even on an unsigned Response | hand-checked, `requireDestination` | `authcore/saml.Config.RequireDestination`, defaults `true`, left unset | identical |
+| Weak signature algorithm (rsa-sha1 etc.) rejected | hand-checked, `rejectWeakSignatureAlgs`, explicit allowlist | `Config.RejectWeakSignatures`, defaults `true`, **same allowlist constants** (`dsig.*SignatureMethod`), left unset | identical |
+| Encrypted assertion refused | hand-checked, `rejectEncryptedAssertion` | `Config.AllowEncryptedAssertions`, defaults `false`, left unset | identical |
+| Duplicate attribute Name refused | hand-checked, unconditional, inline in `samlClaims` | `Config.StrictAttributes`, **defaults `false`** — the one knob this migration must set explicitly, confirmed it does (`samlConfig`, pinned by `TestSAMLProviderConfigIsStrict`) | identical, but only because the migration remembered the one reversed default |
+| Assertion replay rejected | hand-checked, `s.st.MarkAssertionSeen`, persistent, hashed, per-IdP | `Config.ReplayCache`, RP's own `samlReplayCache` adapter over the same table, same hash function, confirmed persistent across a simulated restart by this report's own test | identical, independently re-verified, not merely re-read |
+| Replay-cache TTL ceiling | clamped to `now+34min` max (30min pre-margin + 4min margin) | clamped to `now+30min` max (margin already included) | **changed, 4 minutes tighter — see P1 #3**, not a capability loss |
+| Multiple `Assertion`/`EncryptedAssertion` elements rejected | **none — confirmed absent, not merely "not found"** | `authcore/saml`, unconditional, pre-signature (`ErrTooManyAssertions`) | **new capability, closes a real pre-existing gap (GHSA-j2jp-wvqg-wc2g class)** |
+| `InResponseTo` required unless `AllowIDPInitiated` | crewjam's own `validateRequestID`, forwarded as-is | same crewjam function, still reached the same way (`Config.AllowIDPInitiated` forwards to `sp.AllowIDPInitiated` unchanged) | identical |
+| Transient NameID rejected as an account key | `strings.Contains(format, "transient")` | `Assertion.IsTransient()`, same substring check, confirmed by reading `assertion.go` | identical |
+| Federated `<EntitiesDescriptor>` IdP metadata unwrapping | hand-rolled `parseIdPMetadata` | same function, moved verbatim to `saml_crewjam.go`, byte-identical logic | identical |
+| Step-up `ForceAuthn` | `crewjam/saml` directly, `req.ForceAuthn = &true` | still `crewjam/saml` directly (`saml_crewjam.go`), `authcore/saml` has no API for this | identical outcome, **not** a clean facade swap — see Bottom line and P1 #1 |
+| SP private key: unsealed once per request, never cached, never logged | yes | yes, same frequency, same `samlKeypair` function, `authcore/saml` documents it never logs | identical, confirmed by grep over every `log.`/`fmt.Errorf` call site in the three new files |
+| Multi-tenant isolation (one provider row per `Slug`, never a shared/cached instance) | yes, `samlSP(p)` built fresh per request | yes, `samlProvider(p)` built fresh per request, confirmed by this report's own cross-tenant test through the real construction path | identical, independently re-verified |
+
+**No capability loss identified.** One real gap closed (multiple-assertion rejection); one number
+shifted in a direction that is not a loss (replay TTL ceiling, P1 #3); one place the facade did not
+close cleanly (`ForceAuthn`, pre-existing as an `authcore/saml` API gap, not an RP defect).
+
+### Glue-code accounting
+
+Re-derived directly from `wc -l` on exact line ranges (`git show main:<path> | wc -l` for pre;
+`wc -l` on the working tree for post), not taken from the migration's own count — which, worth
+recording, needed a correction on this report's *own* first pass before it matched the migration's
+number: an initial attempt bounded `authhardening_test.go`'s SAML section from the `func` keyword
+rather than its four-line leading doc comment, undercounting both sides by 4 lines each and (by
+coincidence of the arithmetic) landing on the same net delta but a different absolute split. Redone
+from each section's actual leading comment line, both sides now match the migration's own count
+exactly.
+
+| | Pre-migration | Post-migration | Δ |
+|---|---|---|---|
+| Production: `saml.go` alone | 596 | 415 | — |
+| Production: `saml.go` + `saml_crewjam.go` + `saml_replay.go` | 596 | 593 | **−3** |
+| Test: `saml_test.go` | 257 | 311 | +54 |
+| Test: `authhardening_test.go`, SAML section only | 82 | 89 | +7 |
+| Test: combined | 339 | 400 | **+61** |
+| **Total (production + test)** | 935 | 993 | **+58** |
+
+Smallest net cost of any migration that grew at all (`captcha` +25 production-only; `audit` +195,
+rejected; `passkey` +181). Unlike those three, essentially all of `saml`'s cost sits in tests, and
+essentially all of that cost is the direct, necessary consequence of upgrading from "a private
+function's unit test" to "an integration test that proves the wiring, not just the logic" — the same
+tradeoff the migration's own report identifies, confirmed here to be the actual shape of the diff
+rather than taken on faith.
+
+### The five data points
+
+| Consumer | Lines before | Lines after | Δ | Notes |
+|---|---|---|---|---|
+| `geoip` @ RP | 171 | 82 | **−89** | Clean win — pure forwarding, no local features lost |
+| `captcha` @ RP | 216 | 241 | +25 | Acceptable — cost is two permanent, documented behavior differences, not authcore friction |
+| `audit` @ RP | 545 | 740 | **+195** | Removed from authcore — paid for a chain never wired up, still had to hand-roll everything the shared model omits |
+| `audit` @ AlertHub | 468 | 468 | **0 — never attempted** | Blocked before writing an adapter: `Chain` cannot cover `org_id`, confirmed by an independent, self-run reproduction |
+| `passkey` @ RP | 373 | 554 | +181 | Kept — real responsibility transfer (ceremony orchestration correctness), reviewed and confirmed by a separate report |
+| `saml` @ RP | 935† | 993† | **+58** | Kept — real responsibility transfer (pre-signature structural validation, closes a confirmed pre-existing gap), production code alone is −3 |
+
+† `saml`'s row is production + test combined (596→593 production, 339→400 test), unlike the other
+rows, which count production code only — `geoip`/`captcha`/`audit`/`passkey` did not break out their
+test deltas separately in this document. Comparing `saml`'s production-only number (596→593, **−3**)
+against the others' convention, this migration is the second cleanest win after `geoip`, not a
+"+58" outlier — the combined number is reported here because most of this migration's real story
+lives in what the tests had to become, not in the production line count, and burying that in a
+production-only figure would be the same kind of rounding-up this document exists to avoid.
+
+### Verification performed for this report
+
+- `git status` / `git diff main --stat` against the actual working tree in RP's repo (nothing on
+  `refactor/authcore-saml` is committed; the branch exists, but the diff that matters is
+  branch-vs-`main` in the working tree).
+- `git show main:internal/app/saml.go`, `git show main:internal/app/authhardening_test.go` read in
+  full and diffed against the working copies, not sampled.
+- Every one of `authcore/saml`'s eight source files read in full: `provider.go`, `validate.go`,
+  `assertion.go`, `replay.go`, `rawxml.go`, `inflate.go`, `errors.go`, plus its three `_test.go`
+  files skimmed for existing coverage claims this report needed to confirm or rule out reusing
+  (`TestValidateResponseXML_StrictAttributes(EndToEnd)`).
+- `crewjam/saml@v0.5.1`'s `service_provider.go` read directly (`ParseXMLResponse`,
+  `validateRequestID`) to independently confirm both the "RP had a real gap" claim and the
+  `AllowIDPInitiated` forwarding claim, rather than trusting either from the migration's report.
+- `GOWORK=off go build ./...`, `go vet ./...`, `gofmt -l .` — clean.
+- `GOWORK=off govulncheck ./...` — 0 vulnerabilities reachable; 2 flagged in required-but-unused
+  code paths, unchanged from pre-migration.
+- `GOWORK=off go test ./... -race -count=1` — full suite, run twice from a clean invocation
+  (`internal/app` at 143.9s and 146.8s, both within this package's known range); zero failures both
+  times.
+- Four new tests written in `internal/app/saml_verification_test.go`, independent of the migration's
+  own test files: a two-`*Store`-instance, file-backed-sqlite simulation of a process restart
+  proving replay persistence; a two-tenant test through the real `samlProvider -> samlConfig`
+  construction path proving replay-cache isolation; a step-up-vs-ordinary redirect-URL decode
+  proving `ForceAuthn` reaches the wire only where it should; and a direct check of
+  `samlFailureReason`'s two previously-untested branches.
+- `authcore/saml`'s own `TestValidateResponseXML_StrictAttributesEndToEnd` run directly in this repo
+  (`go test ./saml/... -run StrictAttributes -v`) to confirm the half of `StrictAttributes` RP's own
+  suite does not (and, per P1 #2, should not need to) re-prove.
+- `go run` on a throwaway, uncommitted 20-line program reproducing both implementations' TTL-clamp
+  arithmetic directly, to turn P1 #3 from a read-the-code suspicion into a quoted, reproducible
+  number.
+- `git log --oneline -1 9936873` in this repo, confirming the pinned `authcore` commit is exactly
+  this repo's current `main` tip.
+
+### Verdict: keep `saml` in `authcore`, merge `refactor/authcore-saml` after P1 #1–#3 land
+
+Four migrations, four real data points, and the pattern holds: `geoip` and now `saml` show that a
+package earns its place by taking over a specific, nameable *class of mistake* (a decode function;
+here, the order and completeness of pre-signature XML structural checks), `captcha` and `passkey` show
+it can also earn its place at a real, honestly-reported line-count cost when the responsibility
+transferred is real, and `audit` shows what it looks like when neither is true and a shared type
+cannot even reach a second real consumer. `saml` is the strongest case since `geoip`: production code
+barely moves, the responsibility transferred is specific and named (not "makes SAML more secure" in
+the abstract, but "an attacker cannot smuggle a second `Assertion` element past this SP's signature
+check anymore" — GHSA-j2jp-wvqg-wc2g by name), and the one place the facade did not close cleanly
+(`ForceAuthn`) is an honestly-disclosed, narrowly-scoped `authcore/saml` API gap, not something the
+migration is glossing over. The three P1 items are all small, none of them block the *design*
+conclusion — they are "finish the test coverage the migration's own review just showed was missing"
+and "fix one doc comment," not "redo the approach."
+
+#### Status of the P1 items
+
+All three landed in `KazuhaHub/StockAnalysisPrediction-Report-Portal#12` before it opened, so the
+verdict's precondition is met.
+
+- **P1 #1 and #2** — the review's own four tests were folded into the permanent suite as
+  `internal/app/saml_wiring_test.go`, renamed off their `TestVerify*` review names. They cover the
+  step-up `ForceAuthn` path at the wire level, replay survival across a simulated process restart,
+  cross-tenant replay isolation through the real construction path, and every branch of
+  `samlFailureReason`.
+- **P1 #3** — the dangling reference to `TestSAMLProviderRejectsDuplicateAttribute` is gone. The
+  test was not written: proving the refusal end to end needs a Response whose signature validates,
+  because `StrictAttributes` is checked *after* signature validation, and RP's SAML tests have no
+  signing harness. Every other rejection they exercise — assertion count, weak algorithm, encrypted
+  assertion, `Destination` — happens before it. The comment now says the coverage is config-level
+  and why, rather than naming a test that does not exist.
+- **P1 #4** (the 30-vs-34-minute clamp) needed no code change, only accurate description. The
+  migration's commit message and PR both state the ceiling moved from `now+34min` to `now+30min`
+  and why that is shorter retention rather than a weakening.
+
+The remaining follow-up is on `authcore`, not on RP: adding `Config.ForceAuthn` so that
+`saml_crewjam.go` can go away. Until then, that file is the honest cost of the gap.
