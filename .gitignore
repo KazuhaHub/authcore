@@ -1,0 +1,22 @@
+# Binaries and build output
+*.exe
+*.test
+*.out
+
+# Go workspace files — local development only, never committed
+go.work
+go.work.sum
+
+# Secrets and credentials
+.env
+*.key
+*.pem
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+
+# AI assistant local state
+CLAUDE.local.md
+.claude/

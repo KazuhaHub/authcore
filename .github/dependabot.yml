@@ -1,0 +1,35 @@
+# Dependency updates for authcore.
+#
+# authcore is the single place where security-sensitive identity dependencies
+# (SAML, WebAuthn, OIDC, XML signature) are pinned for every consuming service.
+# Keeping this file working is therefore not housekeeping: a stale pin here
+# silently becomes a stale pin in every project that depends on authcore.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Non-security libraries can land together to keep PR noise down.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - "github.com/crewjam/saml"
+          - "github.com/go-webauthn/*"
+          - "github.com/coreos/go-oidc/*"
+          - "github.com/russellhaering/goxmldsig"
+    # Identity and signature libraries get their own PR each, so that a version
+    # bump is always reviewed on its own and never buried in a batch.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

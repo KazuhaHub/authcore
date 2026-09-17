@@ -1,0 +1,97 @@
+authcore
+Copyright 2026 Kazuha Mo
+
+This product includes software developed as part of the authcore project
+(https://github.com/KazuhaHub/authcore).
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------------
+Third-party components
+
+This module depends on the following third-party Go modules. Each is
+distributed under its own license, reproduced or referenced below. License
+identifiers were confirmed against each project's GitHub repository metadata
+(and, where GitHub's detector returned no assertion, against the LICENSE
+file's actual text) as of 2026-09-17.
+
+Direct dependencies (imported directly by this module's packages)
+------------------------------------------------------------------------------
+
+* github.com/go-chi/chi/v5 (module github.com/go-chi/chi/v5)
+  Used by: ratelimit (middleware.ClientIPFromXFF / ClientIPFromXFFTrustedProxies)
+  License: MIT
+  https://github.com/go-chi/chi
+
+* github.com/go-chi/httprate
+  Used by: ratelimit (sliding-window request counter)
+  License: MIT
+  https://github.com/go-chi/httprate
+
+* github.com/maxmind/mmdbwriter
+  Used by: geoip (test-only: builds synthetic .mmdb fixtures for tests; not
+  part of any built binary that imports this module)
+  License: Apache-2.0
+  https://github.com/maxmind/mmdbwriter
+
+* github.com/mojocn/base64Captcha
+  Used by: captcha (image captcha generation/verification driver)
+  License: Apache-2.0
+  (GitHub's license detector reports "NOASSERTION" for this repository, but
+  its LICENSE file's text is the standard Apache License, Version 2.0,
+  Copyright 2019 Eric <neochau@gmail.com>.)
+  https://github.com/mojocn/base64Captcha
+
+* github.com/oschwald/maxminddb-golang
+  Used by: geoip (MaxMind .mmdb file reader)
+  License: ISC
+  https://github.com/oschwald/maxminddb-golang
+
+Transitive dependencies (pulled in by the direct dependencies above; not
+imported directly by any package in this module, but compiled into any
+binary that uses geoip's test build or captcha's image driver)
+------------------------------------------------------------------------------
+
+* github.com/golang/freetype
+  Pulled in by: base64Captcha (TrueType font rasterization for captcha images)
+  License: dual-licensed, The FreeType License (FTL) OR GPL-2.0-or-later;
+  used here under the FTL.
+  https://github.com/golang/freetype
+
+* github.com/klauspost/cpuid/v2
+  Pulled in by: zeebo/xxh3 (CPU feature detection for hashing)
+  License: MIT
+  https://github.com/klauspost/cpuid
+
+* github.com/oschwald/maxminddb-golang/v2
+  Pulled in by: mmdbwriter (test-only, see above)
+  License: ISC
+  https://github.com/oschwald/maxminddb-golang
+
+* github.com/zeebo/xxh3
+  Pulled in by: mmdbwriter (test-only, see above)
+  License: BSD-2-Clause
+  https://github.com/zeebo/xxh3
+
+* go4.org/netipx
+  Pulled in by: mmdbwriter (test-only, see above)
+  License: BSD-3-Clause
+  https://github.com/go4org/netipx
+
+* golang.org/x/image
+  Pulled in by: base64Captcha (font/image support for captcha rendering)
+  License: BSD-3-Clause
+  https://github.com/golang/image
+
+* golang.org/x/sys
+  Pulled in by: klauspost/cpuid/v2 and others (low-level OS calls)
+  License: BSD-3-Clause
+  https://github.com/golang/sys
+
+------------------------------------------------------------------------------
+No modifications have been made to the source of any third-party component
+listed above; each is used unmodified as published.
