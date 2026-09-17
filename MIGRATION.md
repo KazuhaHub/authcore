@@ -94,6 +94,76 @@ and `audit.MemoryStore.Append` return that error instead; if you want
 "log and continue" semantics, write that one-line wrapper yourself, in your
 own package.
 
+## Import aliases
+
+Every `authcore/<pkg>` sub-package keeps the same base name as the
+hand-rolled package it replaces, by design — that's what lets you swap the
+import path without renaming every symbol at the call site. The one cost of
+that design is that when your own module *also* has a package literally
+named `<pkg>`, the two imports collide and the compiler forces you to give
+one of them a local name.
+
+### When you need an alias
+
+You need an alias only when the **consumer file's own package name** is the
+same as the authcore package you're importing into it. Nothing else
+qualifies — not "this feels related to auth," not "I'd like it to stand out."
+
+```go
+// internal/geoip/reader.go
+package geoip
+
+import authcoregeoip "github.com/KazuhaHub/authcore/geoip" // collision: this
+// file's package is also named geoip — alias required
+```
+
+```go
+// internal/app/audit.go
+package app
+
+import "github.com/KazuhaHub/authcore/audit" // no collision: this file's
+// package is "app", not "audit" — import unaliased, call it audit.Event etc.
+```
+
+Do not alias an import just because a sibling file elsewhere in the same
+project had to. Check the actual `package` clause of the file you're editing;
+an unaliased `authcore/audit` import inside `package app` is correct and
+should stay that way even though `authcore/geoip` needed `authcoregeoip` two
+directories over.
+
+### How to name the alias, when you need one
+
+Use the `authcore` prefix on the colliding package's own name:
+`authcoregeoip`, `authcorecaptcha`, `authcoresaml`, `authcorepasskey`,
+`authcoreaudit`. It's more typing than a short prefix or suffix, but it is
+`grep`-able (`grep -rn authcorecaptcha` finds every call site unambiguously),
+it never collides with anything else a consumer might name a local variable
+or helper, and it makes "this identifier comes from the shared library, not
+from this package's own code" visible at the call site without following the
+import block. Use this exact convention consistently across PSP, RP, and AH
+rather than each project (or each migration pass within a project)
+inventing its own — RP's first two migrations already produced two
+different conventions (`authgeoip` and `captchacore`) for the same problem
+inside a single repository, which is the failure mode this section exists to
+prevent for `saml`, `passkey`, and `audit`.
+
+### This is a stopgap, not the target architecture
+
+A wrapper package that exists only to re-export authcore types under a
+consumer's pre-existing package path (RP's `internal/geoip`, for instance,
+once it's down to forwarding declarations) is a transitional shape, not
+where things should permanently live. It exists so a migration can land
+without forcing every call site across the consumer's codebase to change its
+import in the same commit. Once a given package's migration has been in
+production for a consumer long enough to trust it, the better end state is
+to delete that consumer's wrapper package entirely and have call sites
+import `authcore/<pkg>` directly — at which point the alias question above
+mostly disappears too, since there's no longer a same-named consumer package
+for it to collide with. Don't let the wrapper package harden into permanent
+architecture by default; if a migrated package's wrapper is still doing
+nothing but forwarding a year on, that's worth an explicit follow-up ticket,
+not silent acceptance.
+
 ## Per-package migration
 
 ### `saml`
