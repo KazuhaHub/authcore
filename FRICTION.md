@@ -685,3 +685,326 @@ doesn't use.
 - Is a `canonicalBytes` redesign (caller-extensible hash fields) worth
   pursuing before proposing `audit` to a third consumer, or is the package
   fully off the table?
+
+## passkey — Report-Portal
+
+Third real consumer, on local branch `refactor/authcore-passkey` in RP's
+repo (not pushed, nothing committed — all changes sit in the working tree on
+top of `main`@`4789d0f9`), on `go get github.com/KazuhaHub/authcore@main`
+pinned to commit `2137c0fdf84c` (the commit immediately after `audit` was
+removed, confirmed via `git log --oneline --all | grep 2137c0f` in this
+repo). Scope: swap the internals of `internal/app/passkey.go`'s WebAuthn
+ceremony orchestration (register/login begin-finish, challenge parking,
+counter write-back) for `authcore/passkey`, without touching any of the ~18
+symbols (4 HTTP handlers, 5 `*Store` methods, 6 internal helpers directly
+called by `passkey_test.go`, plus the `webauthn_credentials` schema) that
+sit outside that one file.
+
+### A note on method
+
+This report is written by a different party than the migration it reviews
+(a verification pass, not the implementer's own writeup), following the same
+rule the `audit` review adopted after the geoip/captcha report's P0 had to be
+retracted: every claim below was reproduced directly, not accepted from the
+migration's own summary. Concretely — `git diff main --stat` against the
+actual (uncommitted) working tree, not the branch-to-branch diff the task
+instructions suggested first (that diff is empty; nothing on this branch has
+been committed, confirmed with `git log main..refactor/authcore-passkey`);
+`git show main:internal/app/passkey.go` read and diffed line-by-line against
+the working copy, not sampled; `authcore/passkey`'s five source files
+(`passkey.go`, `registration.go`, `authentication.go`, `credential_store.go`,
+`session_store.go`) read in full rather than taken from its package doc
+comment alone; the go-webauthn v0.17.4→v0.18.1 struct diff re-run directly
+(`diff` on both module versions' `credential.go` in the local module cache)
+rather than trusted from the migration's claim that only `Extensions` was
+added; three new tests written independently of the migration's own test
+file, exercising real cryptographic ceremonies via
+`github.com/descope/virtualwebauthn` (not mocked); and the full suite
+(`go build`, `go vet`, `gofmt -l`, `go test ./... -race -count=1`) run twice
+from a clean invocation, not reused from the migration's own log.
+
+One claim in the migration's own writeup did not survive this process intact
+— see P1 #3 below, which corrects rather than merely repeats it. That is the
+point of doing this independently: the geoip/captcha report's retracted P0
+was a warning that a migration's self-report can be wrong in a way that
+still reads as careful, not just in a way that is obviously sloppy.
+
+### Bottom line
+
+**Yes, keep it — but this is the `captcha` outcome (real growth, real
+value), not the `geoip` outcome (a clean line-count win), and the migration's
+own report already said so plainly rather than rounding up.** The facade
+(`internal/app/passkey.go`'s four HTTP handlers, five `*Store` methods, and
+every symbol `passkey_test.go` calls directly) is provably untouched —
+confirmed by diff, not by reading the migration's summary of the diff — and
+all 13 pre-existing passkey tests plus the migration's own 4 new ones plus
+this report's 3 independent new ones (20 total) pass, including under
+`-race`. No capability was lost. `internal/app/passkey.go` grew from 373 to
+554 lines (+181, confirmed by direct `wc -l` on both revisions), which is a
+real cost, honestly reported by the migration rather than obscured — see
+Glue-code accounting below for what that growth actually buys.
+
+### P0 — none (verified, not assumed)
+
+The candidate this report actually checked and rejected: "the go-webauthn
+v0.17.4→v0.18.1 struct diff might have changed more than `Extensions`,
+silently invalidating stored credentials." Rerun directly against both
+module versions' `credential.go` in the local module cache (not trusted from
+the migration's claim) — confirmed: `Extensions CredentialExtensions
+'json:"extensions,omitzero"'` is the only field added; every other field
+(`ID`, `PublicKey`, `AttestationType`, `AttestationFormat`, `Transport`,
+`Flags`, `Authenticator`, `Attestation`) is byte-identical between versions,
+and `authenticator.go` (holding `SignCount`/`CloneWarning`) was untouched
+entirely. This report's own `TestVerifierLegacyCredentialJSONAuthenticates`
+independently confirms it by reconstructing a v0.17.4-shaped JSON from an
+explicit field allow-list (not by deleting a key from a v0.18.1 record, which
+the migration's own test does and which is a weaker check — see P2 #6) and
+logging in against it successfully. No P0 survives.
+
+### P1 — worth doing before the next consumer wires up a ceremony-scoped SessionStore
+
+#### `CredentialStore.Save` has no channel for caller-owned metadata, and the only one Go's type system leaves (`context.Value`) is a code smell every such caller has to independently discover and accept
+
+Confirmed by reading `credential_store.go` directly: `Save(ctx,
+cred StoredCredential) error`, and `StoredCredential` is exactly
+`{UserHandle []byte, Credential webauthn.Credential}` — there is no third
+field, and the package doc is explicit this is deliberate ("Credential
+*management*... deliberately not part of this package's API"). That
+deliberateness is real and correctly scoped — a passkey's display label is
+account-model data, not WebAuthn-ceremony data, and this package is right
+not to know about it. But "deliberate" and "friction-free" are different
+claims: RP's only two options were (a) a second `UPDATE` after `Save`
+returns, reopening exactly the kind of read-after-write window this
+migration's own report flagged as unacceptable, or (b) thread the label
+through `ctx` with a private key type (`passkeyLabelKey{}`), which is what
+RP did. Every future caller with the same shape of problem (any policy data
+that must land in the same row as the credential, atomically) reinvents this
+same choice from scratch, because nothing in the package doc suggests the
+`context.Value` pattern as the sanctioned answer — it just happens to be the
+only channel `Save`'s signature leaves open. A one-paragraph note on
+`CredentialStore.Save`'s doc comment naming this as the expected pattern
+(or, alternatively, accepting free-form `map[string]any` metadata that this
+package stores opaquely and returns unmodified) would turn a "figure it out"
+into a "here's how."
+
+#### `Begin*`/`Finish*` wrap a caller's own `CredentialStore`/`SessionStore` failure in the same generic `fmt.Errorf` shape as everything else, with no sentinel a caller can positively match to tell "our own storage broke" (500) from "the ceremony was rejected" (400/401)
+
+Confirmed by reading `registration.go`/`authentication.go` directly: every
+store-originated error is `fmt.Errorf("passkey: <verb>ing <noun>: %w", err)`
+— textually distinguishable by a human reading the message, but not by
+`errors.As`/`errors.Is` against anything this package exports. go-webauthn's
+own errors ARE returned unwrapped (the package doc says so, and this was
+verified rather than assumed: `s.wa.FinishRegistration`/`FinishLogin`
+results flow straight through with no wrapping), so a caller COULD in
+principle treat "is a `protocol.Error`" as the positive signal and
+everything else as "must be our store" — but that is reasoning by exclusion,
+not a supported contract, and it silently misclassifies any future error
+this package might start returning for a reason that is neither (a config
+error from a bad `Now`, for instance). RP's chosen fix —
+wrapping every `CredentialStore` method's own error in an unexported
+`*passkeyStoreError` at the RP-side adapter boundary and unwrapping with
+`errors.As` in the handler — is correct and entirely on RP's side of the
+interface, which is the right place for it to live if this package doesn't
+want to commit to a sentinel. But every caller needing this same
+distinction (which is most of them — a 500-vs-4xx split is not an unusual
+thing to want) reinvents the same wrapper. A single exported
+`ErrCredentialStore`/`ErrSessionStore` sentinel this package wraps its own
+`fmt.Errorf`s in (in addition to, not instead of, the descriptive message)
+would let every caller use one `errors.Is` check instead of building their
+own wrapper type.
+
+#### `SessionStore` has no concept of "ceremony kind" — real, but the consequence the migration's own report drew from it ("must build a Service per kind") does not hold, and is corrected here, not merely repeated
+
+Confirmed by reading `session_store.go` directly: `Put(ctx, data)
+(id, err)` / `Take(ctx, id) (data, ok)` — no kind parameter anywhere in the
+interface, so nothing stops a challenge issued by `BeginRegistration` from
+being handed to `FinishLogin` at the `SessionStore` layer specifically (in
+practice go-webauthn's own request-shape parsing — an attestation response
+does not parse as an assertion response — makes this an unlikely real
+exploit path, but the `SessionStore` layer itself provides no defense of its
+own, and a caller's own adapter has to be the one providing it, exactly as
+`ceremonySessionStore.kind` does here).
+
+Where the migration's own report overstates the consequence: it frames
+building a `ceremonySessionStore` (and therefore a `passkey.Service`) per
+ceremony kind as something authcore's API forces. It does not. `Put`/`Take`
+both receive `ctx` (confirmed: `registration.go`/`authentication.go` thread
+it from `BeginRegistration(ctx, ...)`/`FinishRegistration(ctx, ...)` etc.
+straight to `s.sessions.Put(ctx, ...)`/`s.sessions.Take(ctx, ...)`), and this
+same migration already establishes the pattern of carrying caller-owned
+policy data through `ctx` for exactly this kind of gap (see P1 #1's label
+key). A single `SessionStore` implementation that read an expected "kind"
+value off `ctx` (set once per call site, `BeginRegistration` vs
+`BeginLogin`) would let ONE shared `passkey.Service` serve both ceremony
+types, with no loss of the cross-kind protection `ceremonySessionStore.kind`
+provides today. RP's two-`Service`-per-request design is not wrong, and it
+was independently necessary anyway for the hot-reloadable-RP-ID reason in P2
+below — but it is a design choice RP made, not one `SessionStore`'s shape
+required. `SessionStore` genuinely has no native "kind" concept; that part
+of the finding stands. What does not stand is treating "no native kind
+concept" and "must instantiate multiple Services" as the same fact.
+
+### P2 — noted, no action needed
+
+#### The package doc's "a typical deployment constructs one Service at startup and shares it" guidance has no caveat for a Relying Party config that can legitimately change without a restart
+
+`passkey.go`'s package doc states the startup-once pattern as the norm with
+no qualification. It is a reasonable default, but it is silently
+incompatible with any deployment where the RP ID/origin is admin-configured
+and expected to take effect on the next request (RP's own pre-existing
+requirement, unrelated to this migration — see `TestPasskeyRelyingPartyComesFromPublicURL`,
+untouched by this migration). The escape hatch — rebuild `Service` per
+request — is safe only when `SessionStore` itself holds no state tied to
+the `Service` instance (a database-backed store, not `DefaultMemoryStore()`),
+and that precondition is not mentioned anywhere the "typical deployment"
+guidance appears. Not a defect — nothing forces the startup-once pattern —
+but a caller who takes the doc's own "typical" framing at face value and
+later needs config hot-reload will not discover the incompatibility until a
+production incident (every Begin/Finish pair silently fails because the
+Finish request almost never lands on the same freshly-built `Service`
+instance). This report's own
+`TestVerifierPasskeyServiceRejectsUnconfiguredPublicURL` confirms RP's
+mitigation (rebuild per request, backed by the `auth_requests` table) works
+correctly, but the underlying incompatibility this works around is still
+worth one sentence in the package doc.
+
+#### `CredentialStore.UpdateSignCount`'s unconditional-write-back-even-on-`CloneWarning` behavior — the migration's own report undersells how well this is actually documented
+
+The migration's writeup describes this as relying "entirely on注释兜底"
+(entirely on a doc comment as a backstop) with "没有任何结构性提示" (no
+structural indication) for future maintainers. Read directly,
+`credential_store.go`'s doc comment on `UpdateSignCount` is not a passing
+mention — it is a dedicated paragraph stating explicitly that this method
+"is called after every cryptographically successful login, including one
+where `cred.Authenticator.CloneWarning` is set," that the write-back is
+"unconditional," and that deciding what a clone warning MEANS "is the
+caller's policy." That is about as strong a structural signal as a doc
+comment can give without the type system enforcing it — this is closer to
+"thoroughly documented, deliberately left to the caller" than to "silently
+relying on a comment nobody will read." Recorded here as a correction to the
+migration's own framing, not as an independent finding: the underlying fact
+(no `Config` flag exists to suppress the write-back; a caller wanting RP's
+policy must implement it in their own `CredentialStore.UpdateSignCount`, as
+RP did) is accurate and is not a defect — it is exactly the "mechanism, not
+policy" split this package commits to everywhere else, applied consistently
+here too.
+
+#### The migration's compatibility test strips an `"extensions"` key that its own comment admits was never present in the sample it tested
+
+`TestPasskeyPreMigrationCredentialJSONStillAuthenticates` (the migration's
+own test) registers a real credential, then does
+`delete(asMap, "extensions")` before rewriting the stored row — but its own
+`t.Log` in the same test observes this is a no-op, because `omitzero` means
+a credential with no extension outputs never serializes an `"extensions"`
+key in the first place. The test still passes and still proves something
+real (a stored credential authenticates after the migration), but it does
+not, by itself, prove the specific claim it is named for — that a genuinely
+v0.17.4-shaped record (which structurally COULD NOT have carried that key,
+rather than happening not to) round-trips. This report's own
+`TestVerifierLegacyCredentialJSONAuthenticates` closes that gap by
+reconstructing the JSON from an explicit v0.17.4 field allow-list instead of
+deleting a key from a live v0.18.1 record. Not a P1: the migration's test is
+honest about its own limitation in its own log output, which is exactly the
+right thing to do with a test that turns out weaker than intended — it is
+recorded here as a completeness note, not a defect.
+
+### What confirms the design decisions that did pay off
+
+- **Errors from go-webauthn itself really do pass through unwrapped.**
+  Verified by reading `registration.go`/`authentication.go`: every
+  `s.wa.Finish*` result is returned directly, with no `fmt.Errorf` wrapper —
+  only this package's OWN store-originated errors get wrapped (see P1 #2).
+  A caller that wants `protocol.Error` detail on a genuine ceremony failure
+  gets it without this package getting in the way.
+- **`CloneWarning` surfaced, not decided.** Verified end-to-end with a real
+  forged-clone signature (`TestPasskeyCloneWarningRejectsAndDoesNotAdvanceCounter`,
+  reproduced independently in spirit by this report's own passing run of
+  that same test under `-race`): RP's pre-migration policy — reject the
+  login AND do not advance the stored counter baseline — survived the
+  migration completely intact, implemented entirely in RP's own
+  `CredentialStore.UpdateSignCount`, with zero changes to `authcore/passkey`
+  itself. This is the migration's cleanest evidence that "mechanism, not
+  policy" works as designed under a real, security-relevant policy
+  divergence.
+- **`ctx` really does flow end-to-end**, confirmed directly in source (not
+  assumed from the doc): every `Begin*`/`Finish*` call threads its `ctx`
+  argument to both `CredentialStore` and `SessionStore` calls, which is what
+  makes both the label-via-context pattern (P1 #1) and the
+  kind-via-context alternative this report identifies (P1 #3) possible at
+  all — a `Service` that dropped `ctx` internally would foreclose both.
+
+### Glue-code accounting
+
+| | Lines |
+|---|---|
+| `internal/app/passkey.go`, pre-migration (`main`) | 373 |
+| `internal/app/passkey.go`, post-migration | 554 |
+| Net change | **+181** |
+| — of which: retained solely for `passkey_test.go` to call directly, no longer reachable from any production handler (`passkeyUser` type+methods, `webAuthn()`, `s.passkeyUser()`, `takeCeremony()`, `credentialDescriptors()`) | ~56 |
+| — of which: exists only to satisfy `CredentialStore.FindByID`'s unconditional interface requirement; no handler on RP's own path calls it (RP does not offer discoverable login) | ~28 |
+| — of which: genuinely new, genuinely load-bearing production glue (two adapters, `passkeyService()`, error-wrapping type, label-context key, rewritten handler bodies, and the comments explaining each divergence from pre-migration behavior) | ~97 |
+
+Unlike `geoip` (171→82, a clean win) and more like `captcha` (216→241,
++25), this is real growth. Unlike `audit` (545→740, +195, eventually
+rejected), the growth here is not owed to a shared type that turned out
+data-layer-incompatible with a second consumer — the ~84 lines that are not
+"genuinely load-bearing" above are retained for test-reachability and
+interface-completeness, both individually justified (see Bottom line), not
+dead weight nobody accounts for. Whether ~97 lines of new glue, in exchange
+for deleting the hand-rolled Begin/Finish orchestration, the exclusion-list
+construction, and the ceremony single-use bookkeeping this package now
+owns, is worth it is a judgment call — this report's position is that it is
+(see Bottom line), but it is not a line-count win and should never be
+described as one.
+
+### Capability audit (pre- vs. post-migration, RP passkey)
+
+All confirmed by reading `git diff main -- internal/app/passkey.go`
+directly, not by trusting the migration's own summary of it:
+
+| Behavior | Pre-migration | Post-migration | Match |
+|---|---|---|---|
+| RP ID / origin derivation, refuses when `public_url` unset | `webAuthn()`, per-request | `passkeyService()`, per-request (P2 #4 discusses why per-request is required) | identical, confirmed by this report's own new test |
+| Registration exclusion list (no duplicate re-registration) | hand-built via `credentialDescriptors()` | built internally by `authcore/passkey.BeginRegistration` from `FindByUserHandle` | identical outcome, ownership moved into authcore |
+| Ceremony challenge storage | `auth_requests` table, `stashCeremony`/`takeCeremonyAny` | same table, same functions, now called from `ceremonySessionStore` | identical, byte-for-byte reused |
+| Ceremony TTL | 5 minutes (`passkeyChallengeTTL`) | unchanged, same constant | identical |
+| Ceremony single-use (webauthn session token) | `ConsumeAuthRequest`, atomic | unchanged | identical |
+| Cross-user ceremony claim rejected | hand-checked (`takeCeremony`'s `wantUser`) | go-webauthn's own internal handle-vs-session.UserID check (see P1 #3's `ctx` discussion for why RP's hand-check is now redundant on the production path, though still tested directly) | identical outcome, enforcement moved into go-webauthn |
+| Counter-rollback (clone) detection: reject login | yes | yes | identical, confirmed under `-race` |
+| Counter-rollback: do NOT advance stored counter baseline on a rejected clone signal | yes (`return` before `TouchPasskey`) | yes (`CredentialStore.UpdateSignCount` short-circuits on `CloneWarning`) | identical, this report's own independent test passes |
+| WebAuthn user handle = username | yes (`passkeyUser.WebAuthnID()`) | yes (`[]byte(cred.UserHandle)`, `[]byte(user)` at every call site) | identical, existing credentials' handle semantics unchanged |
+| Password-leg ("pending" 2FA) token consumption timing in `apiPasskeyLoginFinish` | consumed BEFORE `wa.FinishLogin`'s cryptographic verification — a failed/rejected assertion still burned the password leg | consumed AFTER a successful `FinishLogin` AND a passed `CloneWarning` check — a rejected assertion leaves the password leg intact for a retry | **changed, not regressed** — this is a real behavior difference from `main` this report found by diffing (not called out as a checked line item by either the recon or migration report's own capability table), confirmed both ways by this report's own `TestVerifierRejectedLoginDoesNotBurnPendingToken`: the password leg survives a rejected attempt AND is still consumed exactly once, on the eventual success. RP-internal, not an `authcore` friction point — noted here because it was found in the course of this verification and belongs on the record. |
+
+**No capability loss identified.** One behavior improved (see the last row)
+without the change being explicitly claimed as a capability decision by
+either report that preceded this one.
+
+### Verification performed for this report
+
+- `git status`/`git diff main --stat` against the actual working tree
+  (branch-to-branch diff is empty; nothing here is committed) — run
+  directly, not trusted from the migration's own numbers, which it
+  otherwise confirmed.
+- `git show main:internal/app/passkey.go` diffed line-by-line against the
+  working copy; every hunk read, not sampled.
+- `GOWORK=off go build ./...`, `go vet ./...`, `gofmt -l .` — clean.
+- `GOWORK=off go test ./... -race -count=1` — full suite, run twice from a
+  clean invocation (once before this report's own new tests were added,
+  once after); `internal/app` at ~141s both times, within the range this
+  package's tests are known to take.
+- `go-webauthn` v0.17.4 vs v0.18.1 `credential.go`/`authenticator.go`
+  diffed directly in the local module cache, not trusted from the
+  migration's claim.
+- `authcore/passkey`'s five source files read in full: `passkey.go`,
+  `registration.go`, `authentication.go`, `credential_store.go`,
+  `session_store.go`.
+- Three new tests written independently of the migration's own
+  `passkey_authcore_test.go` (different helpers, different server fixture,
+  different construction of the legacy-JSON case), all passing under
+  `-race`: a legacy-credential-JSON login, a rejected-login-does-not-burn-
+  pending-token round trip (including a genuine retry against the surviving
+  token), and a production-path (not test-only-helper) origin/RP-ID
+  hot-reconfiguration check.
+- `git log --oneline --all | grep 2137c0f` in this repo, confirming the
+  pinned `authcore` commit is exactly the one immediately after `audit` was
+  removed (`2137c0f refactor: remove audit (#8)`).

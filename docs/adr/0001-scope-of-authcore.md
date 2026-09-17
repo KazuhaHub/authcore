@@ -107,3 +107,41 @@ Putting thresholds and enforcement in a shared library would rebuild the
 `identity` package this project already declined to build, for the same reason:
 the three services would not agree, and the library would fill with
 conditionals until nobody dared touch it.
+
+## Addendum, 2026-09-17: line count is not the test
+
+Three packages have now been measured against a real consumer, and the numbers
+alone would have given the wrong answer twice.
+
+| Package | Consumer | Before | After | Δ | Kept? |
+|---|---|---|---|---|---|
+| `geoip` | Report-Portal | 171 | 82 | −89 | yes |
+| `captcha` | Report-Portal | 216 | 241 | +25 | yes |
+| `audit` | Report-Portal | 545 | 740 | +195 | **no** |
+| `audit` | AlertHub | 468 | 468 | blocked | **no** |
+| `passkey` | Report-Portal | 373 | 554 | +181 | yes |
+
+`audit` and `passkey` cost almost the same number of lines and got opposite
+answers. The difference is what the consumer stopped owning.
+
+`audit` handed back an `Event` struct Report-Portal already had, and a hash
+chain it does not switch on. Nothing it had to get right moved anywhere.
+
+`passkey` moved ceremony orchestration out: challenge issue and single-use
+consumption, origin and RP ID validation, the registration exclusion list,
+cross-user session binding, counter rollback detection. Report-Portal tested
+that with 245 lines of its own; authcore tests it with 1,118 — replay, expiry,
+origin and RP ID mismatch, rollback, a counter pinned at zero not being mistaken
+for one, handle confusion, discoverable login among several accounts, concurrent
+begins. A bug in any of it is an account takeover.
+
+So the question to ask a candidate package is **what does the consumer stop
+having to get right**, and line count is a proxy that only tracks it when the
+package is simple. It tracked well for `geoip`, a lookup with no opinions. It
+would have kept `audit` if the bar were merely "no worse than passkey", and it
+would have dropped `passkey` if the bar were "must shrink".
+
+This is not a licence to keep anything that grows the consumer. `audit` grew it
+and went. The test is transferred correctness, and it has to be answerable
+concretely — name the failure mode the consumer no longer owns. "Code reuse is
+good" is not an answer.
