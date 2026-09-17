@@ -16,11 +16,26 @@ Third-party components
 This module depends on the following third-party Go modules. Each is
 distributed under its own license, reproduced or referenced below. License
 identifiers were confirmed against each project's GitHub repository metadata
-(and, where GitHub's detector returned no assertion, against the LICENSE
-file's actual text) as of 2026-09-17.
+via `gh api repos/<org>/<repo> --jq .license.spdx_id` (and, where that
+returned no assertion, against the LICENSE file's actual text), and the
+dependency set itself was confirmed against `go list -m all` and `go mod why`
+against this module's actual `go.mod`, as of 2026-09-17.
 
 Direct dependencies (imported directly by this module's packages)
 ------------------------------------------------------------------------------
+
+* github.com/crewjam/saml
+  Used by: saml (SP-side SAML 2.0 orchestration: AuthnRequest issuance,
+  Response/Assertion parsing and validation)
+  License: BSD-2-Clause
+  https://github.com/crewjam/saml
+
+* github.com/descope/virtualwebauthn
+  Used by: passkey (test-only: a real virtual WebAuthn authenticator that
+  signs genuine attestation/assertion responses for ceremony tests; not part
+  of any built binary that imports this module)
+  License: MIT
+  https://github.com/descope/virtualwebauthn
 
 * github.com/go-chi/chi/v5 (module github.com/go-chi/chi/v5)
   Used by: ratelimit (middleware.ClientIPFromXFF / ClientIPFromXFFTrustedProxies)
@@ -31,6 +46,11 @@ Direct dependencies (imported directly by this module's packages)
   Used by: ratelimit (sliding-window request counter)
   License: MIT
   https://github.com/go-chi/httprate
+
+* github.com/go-webauthn/webauthn
+  Used by: passkey (WebAuthn registration/authentication ceremony library)
+  License: BSD-3-Clause
+  https://github.com/go-webauthn/webauthn
 
 * github.com/maxmind/mmdbwriter
   Used by: geoip (test-only: builds synthetic .mmdb fixtures for tests; not
@@ -51,10 +71,41 @@ Direct dependencies (imported directly by this module's packages)
   License: ISC
   https://github.com/oschwald/maxminddb-golang
 
+* github.com/russellhaering/goxmldsig
+  Used by: saml (XML digital signature verification for SAML Responses/Assertions)
+  License: Apache-2.0
+  https://github.com/russellhaering/goxmldsig
+
 Transitive dependencies (pulled in by the direct dependencies above; not
 imported directly by any package in this module, but compiled into any
-binary that uses geoip's test build or captcha's image driver)
+binary that uses saml, passkey, geoip's test build, or captcha's image driver)
 ------------------------------------------------------------------------------
+
+* github.com/beevik/etree
+  Pulled in by: crewjam/saml (XML tree parsing)
+  License: BSD-2-Clause
+  https://github.com/beevik/etree
+
+* github.com/fxamacker/cbor/v2
+  Pulled in by: go-webauthn/webauthn/protocol/webauthncbor (CBOR decoding of
+  WebAuthn attestation objects)
+  License: MIT
+  https://github.com/fxamacker/cbor
+
+* github.com/go-viper/mapstructure/v2
+  Pulled in by: go-webauthn/webauthn/protocol
+  License: MIT
+  https://github.com/go-viper/mapstructure
+
+* github.com/go-webauthn/x
+  Pulled in by: go-webauthn/webauthn/protocol (secp256k1 / ASN.1 helpers)
+  License: BSD-3-Clause
+  https://github.com/go-webauthn/x
+
+* github.com/golang-jwt/jwt/v5
+  Pulled in by: go-webauthn/webauthn/protocol (FIDO metadata JWT parsing)
+  License: MIT
+  https://github.com/golang-jwt/jwt
 
 * github.com/golang/freetype
   Pulled in by: base64Captcha (TrueType font rasterization for captcha images)
@@ -62,18 +113,58 @@ binary that uses geoip's test build or captcha's image driver)
   used here under the FTL.
   https://github.com/golang/freetype
 
+* github.com/google/go-tpm
+  Pulled in by: go-webauthn/webauthn/protocol (TPM attestation statement
+  verification)
+  License: Apache-2.0
+  https://github.com/google/go-tpm
+
+* github.com/google/uuid
+  Pulled in by: go-webauthn/webauthn/protocol
+  License: BSD-3-Clause
+  https://github.com/google/uuid
+
+* github.com/jonboulle/clockwork
+  Pulled in by: russellhaering/goxmldsig
+  License: Apache-2.0
+  https://github.com/jonboulle/clockwork
+
 * github.com/klauspost/cpuid/v2
-  Pulled in by: zeebo/xxh3 (CPU feature detection for hashing)
+  Pulled in by: zeebo/xxh3 (CPU feature detection for hashing). Present in
+  this module's dependency graph via go-chi/httprate's own requirements; not
+  actually imported by any package this module builds (`go list -deps` does
+  not reach it), so it is listed here for completeness but contributes no
+  code to any binary built against authcore.
   License: MIT
   https://github.com/klauspost/cpuid
+
+* github.com/mattermost/xml-roundtrip-validator
+  Pulled in by: crewjam/saml (defense against XML round-trip attacks)
+  License: Apache-2.0
+  https://github.com/mattermost/xml-roundtrip-validator
 
 * github.com/oschwald/maxminddb-golang/v2
   Pulled in by: mmdbwriter (test-only, see above)
   License: ISC
   https://github.com/oschwald/maxminddb-golang
 
+* github.com/philhofer/fwd
+  Pulled in by: tinylib/msgp/msgp (buffered reader/writer)
+  License: MIT
+  https://github.com/philhofer/fwd
+
+* github.com/tinylib/msgp
+  Pulled in by: go-webauthn/webauthn/protocol (MessagePack support)
+  License: MIT
+  https://github.com/tinylib/msgp
+
+* github.com/x448/float16
+  Pulled in by: fxamacker/cbor/v2 (IEEE 754 binary16 support for CBOR)
+  License: MIT
+  https://github.com/x448/float16
+
 * github.com/zeebo/xxh3
-  Pulled in by: mmdbwriter (test-only, see above)
+  Pulled in by: go-chi/httprate and mmdbwriter (test-only, see above)
   License: BSD-2-Clause
   https://github.com/zeebo/xxh3
 
@@ -82,13 +173,19 @@ binary that uses geoip's test build or captcha's image driver)
   License: BSD-3-Clause
   https://github.com/go4org/netipx
 
+* golang.org/x/crypto
+  Pulled in by: crewjam/saml/xmlenc (ripemd160, OCSP) and go-webauthn/webauthn
+  License: BSD-3-Clause
+  https://github.com/golang/crypto
+
 * golang.org/x/image
   Pulled in by: base64Captcha (font/image support for captcha rendering)
   License: BSD-3-Clause
   https://github.com/golang/image
 
 * golang.org/x/sys
-  Pulled in by: klauspost/cpuid/v2 and others (low-level OS calls)
+  Pulled in by: oschwald/maxminddb-golang and klauspost/cpuid/v2 (low-level
+  OS calls)
   License: BSD-3-Clause
   https://github.com/golang/sys
 
