@@ -72,6 +72,28 @@ None of the three know what a NameID, a user handle, or an actor ID mean
 beyond byte equality; mapping any of them onto an account is left entirely
 to the caller, exactly like every other package in this module.
 
+## Scope
+
+authcore is identity protocol orchestration, plus the controls that protect
+authentication flows.
+
+Every package here answers one question: *does it protect an authentication
+flow?* `saml` and `passkey` are the flows. `captcha` and `ratelimit` keep login
+and registration from being abused. `audit` exists because authentication
+events are what you most want a trustworthy record of. `geoip` answers where a
+login came from.
+
+A package that cannot answer that question belongs somewhere else, however
+security-adjacent it looks. The name is deliberately narrow: a library with one
+maintainer fills up with "well, it's security-related" unless something makes a
+bad addition feel awkward, and a precise name is the cheapest thing that does.
+
+Risk-control primitives — impossible travel, concurrent-session counting,
+device fingerprinting — are expected to grow into a separate module rather than
+land here. See [ADR 1](docs/adr/0001-scope-of-authcore.md) for the reasoning,
+including why the module was not renamed or split, and what would trigger a
+split later.
+
 ## Packages
 
 | Package | Purpose | Built on |
