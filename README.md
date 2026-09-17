@@ -7,7 +7,7 @@
 `authcore` is a small set of independent, infrastructure-level Go packages
 extracted from three separate services that had each reimplemented the same
 things: rate limiting, captcha issuance, IP-to-location lookup, and — as of
-`saml`, `passkey`, and `audit` — SAML/WebAuthn ceremony orchestration and
+`saml` and `passkey` — SAML/WebAuthn ceremony orchestration and
 activity logging.
 
 ## Design principle: share mechanism, not policy
@@ -52,11 +52,10 @@ vocabulary this module exists to keep out. That kind of package belongs in
 each application (or in a separate, explicitly opinionated module upstream of
 it), built on top of these mechanism packages — not inside `authcore`.
 
-This holds even for `saml`, `passkey`, and `audit`, which sit closer to
+This holds even for `saml` and `passkey`, which sit closer to
 "identity" than `ratelimit`/`captcha`/`geoip` do but keep to the same rule.
 Each is an **orchestration layer over a protocol library**
-(`crewjam/saml`, `go-webauthn/webauthn`) or a **generic event log**
-(`audit`) — never an account model:
+(`crewjam/saml`, `go-webauthn/webauthn`) — never an account model:
 
 - `saml` turns a validated SAML Response into a neutral `Assertion` (NameID,
   attributes, session index). It never decides what a NameID or attribute
@@ -64,9 +63,6 @@ Each is an **orchestration layer over a protocol library**
 - `passkey` runs a WebAuthn ceremony against an opaque, caller-supplied
   **user handle** — a byte string it round-trips and never interprets — not
   a `User` type.
-- `audit` records events tagged with opaque `ActorType`/`ActorID`/
-  `TargetType`/`TargetID` strings it never interprets, not a foreign key
-  into anyone's accounts table.
 
 None of the three know what a NameID, a user handle, or an actor ID mean
 beyond byte equality; mapping any of them onto an account is left entirely
@@ -79,9 +75,11 @@ authentication flows.
 
 Every package here answers one question: *does it protect an authentication
 flow?* `saml` and `passkey` are the flows. `captcha` and `ratelimit` keep login
-and registration from being abused. `audit` exists because authentication
-events are what you most want a trustworthy record of. `geoip` answers where a
-login came from.
+and registration from being abused. `geoip` answers where a login came from.
+
+Passing that test is necessary, not sufficient. `audit` passed it and was
+removed anyway, because two real consumers measured it and it saved nobody any
+code — see [ADR 2](docs/adr/0002-audit-is-not-shareable.md).
 
 A package that cannot answer that question belongs somewhere else, however
 security-adjacent it looks. The name is deliberately narrow: a library with one
@@ -103,7 +101,6 @@ split later.
 | [`geoip`](./geoip) | Offline IP-to-location lookup against a local MaxMind-format (`.mmdb`) database, with optional hot-reload | [`oschwald/maxminddb-golang`](https://github.com/oschwald/maxminddb-golang) |
 | [`saml`](./saml) | SAML 2.0 Service Provider orchestration: AuthnRequest issuance, SP metadata, Response/Assertion validation with replay, multi-assertion, decompression-bomb and weak-signature defenses `crewjam/saml` leaves to the caller | [`crewjam/saml`](https://github.com/crewjam/saml) |
 | [`passkey`](./passkey) | WebAuthn ceremony orchestration: registration, allow-listed login, and discoverable (usernameless) login, keyed by an opaque user handle | [`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) |
-| [`audit`](./audit) | Application-agnostic activity log: pluggable `Store`, opaque actor/target fields, an optional SHA-256 hash-chain decorator for tamper-evidence | stdlib only |
 
 Each package has its own doc comment with the full design rationale; the
 table above is just a map to find the right one.
@@ -116,7 +113,6 @@ go get github.com/KazuhaHub/authcore/captcha
 go get github.com/KazuhaHub/authcore/geoip
 go get github.com/KazuhaHub/authcore/saml
 go get github.com/KazuhaHub/authcore/passkey
-go get github.com/KazuhaHub/authcore/audit
 ```
 
 Each package is imported and versioned independently (they're leaves in one
@@ -404,68 +400,6 @@ evicts — a credential is permanent data, not a cache entry); implement
 package doc for why `protocol.VerificationPreferred` (the default) is *not*
 enforced server-side, and why that matters specifically for a discoverable
 login.
-
-### `audit`
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/KazuhaHub/authcore/audit"
-)
-
-func main() {
-	// NewMemoryStore is bounded (TTL + capacity), good for a single
-	// process; a real deployment implements audit.Store against its own
-	// SQL table and gets the same API.
-	store := audit.NewMemoryStore(0, 0) // 0, 0 = package defaults
-
-	// Chain wraps any Store with a SHA-256 hash chain, so a later Verify
-	// call can detect an edited, reordered, or deleted row since it was
-	// written (see the package doc for exactly what this does and does not
-	// prove).
-	log := audit.NewChain(store)
-
-	ctx := context.Background()
-	err := log.Append(ctx, &audit.Event{
-		Action:     "session.create",
-		ActorType:  "user",
-		ActorID:    "42",
-		ActorLabel: "alice@example.com",
-		TargetType: "session",
-		TargetID:   "sess_abc123",
-		IP:         "203.0.113.1", // RFC 5737 documentation address
-		Payload:    audit.Marshal(map[string]any{"method": "passkey"}),
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	events, total, err := log.Query(ctx, audit.Filter{ActorType: "user", ActorID: "42", Limit: 20})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("%d/%d events for actor 42\n", len(events), total)
-
-	// Periodically (or before trusting an export), confirm nothing in the
-	// chain has been altered since the last checkpoint:
-	result, err := audit.Verify(ctx, log, audit.Filter{}, "" /* genesis: no prior anchor */)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("chain OK:", result.OK)
-}
-```
-
-`ActorType`/`ActorID`/`TargetType`/`TargetID` are opaque strings this
-package never interprets — define whatever vocabulary your own application
-needs. `Verify`'s `anchor` parameter exists so a scoped or paginated
-`Verify` call (or one run after old entries were pruned) does not falsely
-report a break at the first event it happens to see; see the package doc.
-
 
 ## Dependency policy
 

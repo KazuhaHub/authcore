@@ -6,7 +6,7 @@ Status: accepted
 ## Context
 
 authcore currently holds `saml`, `passkey`, `audit`, `captcha`, `geoip` and
-`ratelimit`. Two of those — `geoip` especially — are not authentication. They
+`ratelimit`. (`audit` was removed after this was written — see ADR 2.) Two of those — `geoip` especially — are not authentication. They
 are signals you feed into a decision about whether a request is suspicious.
 
 That matters because of what is coming. Passwall-Sub-Panel needs to detect
@@ -33,8 +33,10 @@ authentication flow?*
 - `saml`, `passkey`, and the forthcoming `oidc` are the flows themselves.
 - `captcha` and `ratelimit` protect login and registration from abuse. In
   scope.
-- `audit` exists because authentication events are the thing most worth having
-  a trustworthy record of. In scope.
+- `audit` was in scope on the same reasoning — authentication events are the
+  thing most worth having a trustworthy record of. It was removed anyway, for a
+  reason this rule could not catch: it measured badly against two real
+  consumers. See ADR 2. Passing the scope test is necessary, not sufficient.
 - `geoip` answers "where did this login come from". In scope.
 
 A package that cannot answer that question belongs somewhere else, even if it

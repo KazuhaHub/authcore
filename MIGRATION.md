@@ -1,19 +1,23 @@
 # Migrating to authcore
 
+> `audit` was part of this guide and has been removed from authcore entirely.
+> Two consumers measured it and it saved neither any code; the reasoning is in
+> [ADR 2](docs/adr/0002-audit-is-not-shareable.md).
+
 This document is for engineers on **Passwall-Sub-Panel (PSP)**,
 **Report-Portal (RP)**, and **AlertHub (AH)** moving their own hand-rolled
-SAML, passkey (WebAuthn), and audit-log code onto
-`github.com/KazuhaHub/authcore`'s `saml`, `passkey`, and `audit` packages.
+SAML and passkey (WebAuthn) code onto
+`github.com/KazuhaHub/authcore`'s `saml` and `passkey` packages.
 
 It assumes you have already read each package's own doc comment
-(`saml/provider.go`, `passkey/passkey.go`, `audit/audit.go`) — this document
+(`saml/provider.go`, `passkey/passkey.go`) — this document
 is the delta between what you have today and what authcore gives you, not a
 restatement of the API reference.
 
 ## Two behavioral rules that apply to every package here
 
 These were established by `captcha` (already in production in all three
-projects) and hold for `saml`, `passkey`, and `audit` too. If you have
+projects) and hold for `saml` and `passkey` too. If you have
 already migrated to `captcha`, skip to [Per-package migration](#per-package-migration).
 
 ### 1. Configuration is fixed at construction time
@@ -46,7 +50,7 @@ that other packages should have grown the same feature.
 ### 2. Nothing in this module logs
 
 No package here imports `log`, `log/slog`, or any third-party logging
-library, in `saml`, `passkey`, or `audit` (verified: `grep -rln '"log"\|log\.\|slog\.'`
+library, in `saml` or `passkey` (verified: `grep -rln '"log"\|log\.\|slog\.'`
 across all six packages' non-test `.go` files returns nothing). Every
 rejection is a distinguishable Go error (a sentinel like
 `saml.ErrTooManyAssertions`, or a wrapped `%w` chain with enough context to
@@ -87,12 +91,6 @@ if err != nil {
 }
 ```
 
-Same story for PSP's `audit.Service.Record`, which today swallows an insert
-failure behind `log.Warn(...)` so a bad audit write never breaks the
-request it's logging (`internal/service/audit/audit.go:23`) — `audit.Chain.Append`
-and `audit.MemoryStore.Append` return that error instead; if you want
-"log and continue" semantics, write that one-line wrapper yourself, in your
-own package.
 
 ## Import aliases
 
@@ -118,24 +116,23 @@ import authcoregeoip "github.com/KazuhaHub/authcore/geoip" // collision: this
 ```
 
 ```go
-// internal/app/audit.go
+// internal/app/sso.go
 package app
 
-import "github.com/KazuhaHub/authcore/audit" // no collision: this file's
-// package is "app", not "audit" — import unaliased, call it audit.Event etc.
+import "github.com/KazuhaHub/authcore/saml" // no collision: this file's
+// package is "app", not "saml" — import unaliased, call it saml.Provider etc.
 ```
 
 Do not alias an import just because a sibling file elsewhere in the same
 project had to. Check the actual `package` clause of the file you're editing;
-an unaliased `authcore/audit` import inside `package app` is correct and
+an unaliased `authcore/saml` import inside `package app` is correct and
 should stay that way even though `authcore/geoip` needed `authcoregeoip` two
 directories over.
 
 ### How to name the alias, when you need one
 
 Use the `authcore` prefix on the colliding package's own name:
-`authcoregeoip`, `authcorecaptcha`, `authcoresaml`, `authcorepasskey`,
-`authcoreaudit`. It's more typing than a short prefix or suffix, but it is
+`authcoregeoip`, `authcorecaptcha`, `authcoresaml`, `authcorepasskey`. It's more typing than a short prefix or suffix, but it is
 `grep`-able (`grep -rn authcorecaptcha` finds every call site unambiguously),
 it never collides with anything else a consumer might name a local variable
 or helper, and it makes "this identifier comes from the shared library, not
@@ -145,7 +142,7 @@ rather than each project (or each migration pass within a project)
 inventing its own — RP's first two migrations already produced two
 different conventions (`authgeoip` and `captchacore`) for the same problem
 inside a single repository, which is the failure mode this section exists to
-prevent for `saml`, `passkey`, and `audit`.
+prevent for `saml` and `passkey`.
 
 ### This is a stopgap, not the target architecture
 
@@ -377,112 +374,6 @@ of the TTL sweep — a real fix, not just a rename. AH also gains
 multi-origin support (`Config.RPOrigins` is a list; AH's `rpOrigin` today is
 a single string) and the exclusion-list behavior it never had.
 
-### `audit`
-
-#### What you implement
-
-| Interface | Purpose | Your options |
-|---|---|---|
-| `audit.Store` (`Reader` + `Append`) | Persist and query events | Your own SQL adapter is expected in production; `audit.NewMemoryStore(maxItems, ttl)` (bounded) works for a single process or tests |
-| `audit.HeadReader` (optional) | `Head(ctx) (*Event, error)` — lets `audit.Chain` resume from your store's actual last row instead of assuming genesis | Implement it on your `Store` if you also implement `Store` yourself; `MemoryStore` already does |
-
-`audit.Chain` wraps any `Store` — it is not itself a storage backend.
-
-#### PSP → `audit`
-
-**Before** (`internal/service/audit/audit.go`):
-```go
-func (s *Service) Record(ctx context.Context, actor, action, target, ip string, before, after any) {
-	entry := &domain.AuditEntry{
-		Actor: actor, Action: action, Target: target,
-		BeforeJSON: jsonString(before), AfterJSON: jsonString(after),
-		IP: ip, At: time.Now(),
-	}
-	if err := s.repo.Insert(ctx, entry); err != nil {
-		log.Warn("audit insert failed", "actor", actor, "action", action, "err", err)
-	}
-}
-```
-
-**After:**
-```go
-func Record(ctx context.Context, store audit.Store, actorType, actorID, action, targetID, ip string, before, after any) {
-	err := store.Append(ctx, &audit.Event{
-		ActorType: actorType, ActorID: actorID, Action: action,
-		TargetID: targetID, IP: ip,
-		Payload: audit.BeforeAfter(before, after), // {"before":...,"after":...} — same shape as PSP's two fields
-	})
-	if err != nil {
-		log.Warn("audit insert failed", "actor_id", actorID, "action", action, "err", err) // your call now, see rule #2
-	}
-}
-```
-
-PSP's single `Actor string` splits into `ActorType`/`ActorID` — pass a fixed
-`ActorType` (e.g. `"user"`) and your existing actor string as `ActorID` if
-you don't need the finer split yet; `ActorLabel` is available for a
-display-only caption if you want one. `BeforeJSON`/`AfterJSON` become one
-`Payload` via `audit.BeforeAfter(before, after)`, which reproduces the exact
-`{"before":...,"after":...}` shape PSP's two columns represented — no data
-loss, just one JSON column instead of two. PSP's `Clear(ctx)` and
-`PruneBefore(ctx, cutoff)` (retention/admin ops) have no `audit.Store`
-equivalent by design (`Store` has no delete method anywhere) — keep them as
-extra methods on your own SQL adapter, exactly as PSP's `ports.AuditRepo`
-already separates them from `Insert`/`List`.
-
-#### RP → `audit`
-
-RP's `ActorOU` (the actor's org-tree membership *at write time*) is policy
-this package refuses to carry — keep it as a column on RP's own row type,
-outside `audit.Event`. RP's dual timestamp-format legacy-data handling
-(parsing an old RFC3339-vs-local-wall-clock column split) has no equivalent
-need here since `Event.Time` is always `time.Time` — that parsing stays in
-RP's own `Store` implementation when it reads its legacy column, not in
-`audit`. RP's free-text `Search` filter field is a storage-engine concern
-(`LIKE`/FTS) intentionally left off `audit.Filter` — add it as an extra
-parameter on your own `Store`'s query method beyond the `audit.Store`
-interface; Go interfaces are structural, so your service layer calling the
-concrete type's extra method (instead of the generic `Query`) costs nothing.
-
-#### AH → `audit`
-
-AH already has the richest source model here — `audit.Chain`/`audit.Verify`
-are a direct generalization of AH's own `VerifyAuditChain` (`internal/store/audit.go`,
-canonical length-prefixed encoding, SHA-256, `prev_hash`/`hash`):
-
-**Before:**
-```go
-const (
-	ActorUser = "user"; ActorServiceAccount = "service_account"
-	ActorAdminToken = "admin_token"; ActorSystem = "system"
-)
-type AuditEntry struct {
-	ID int64; OrgID int64; At int64
-	ActorType string; ActorID int64; ActorName string
-	Action string; TargetType, TargetID, Detail, IP string
-	PrevHash, Hash string
-}
-func VerifyAuditChain(...) (bool, error) { /* walks rows, recomputes canonicalAudit, compares Hash */ }
-```
-
-**After:** your `Store` implementation's row type keeps `OrgID` as its own
-column (multi-tenancy is exactly the forbidden "Org" vocabulary — it cannot
-live in `audit.Event`) and exposes an org-filtered listing method *beyond*
-`audit.Store`, same pattern as RP's `Search` above. `ActorUser`/
-`ActorServiceAccount`/`ActorAdminToken`/`ActorSystem` become your own
-untyped string constants passed as `Event.ActorType` — `audit` defines no
-enum, so nothing stops you from keeping these exact four strings. Wrap your
-`Store` in `audit.Chain` and replace `VerifyAuditChain` with
-`audit.Verify(ctx, reader, filter, anchor)`. **Important:** AH's
-`audit_chain_anchor` setting (used to avoid a false break report after
-`PruneAudit` deletes old rows) maps onto `Verify`'s `anchor` parameter — but
-`audit.Chain`/`Verify` do **not** persist that anchor themselves (by
-design, see rule #1's spirit: no hidden state). AH must keep its own
-`audit_chain_anchor` settings-table row and pass its value into `Verify`
-explicitly, exactly as it does today, just against the new function.
-`PruneAudit`'s row-deletion itself also stays entirely in AH's own storage
-layer — `audit.Store` has no delete method.
-
 ## Verifying a migration
 
 Once a project's code compiles against authcore, confirm nothing regressed
@@ -493,7 +384,7 @@ go build ./... && go vet ./... && gofmt -l .
 go test ./... -race -count=1
 ```
 
-If your project is one of the three this module's `saml`/`passkey`/`audit`
+If your project is one of the three this module's `saml`/`passkey`
 tests were built against, the `security-test-suite` repository
 (`kazuhahub-github/docs/security-test-suite`) can also be pointed at your
 migrated endpoints — see that repository's README for its route-alignment
