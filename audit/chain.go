@@ -26,6 +26,7 @@ import (
 // are unaffected by chaining.
 type Chain struct {
 	store Store
+	now   func() time.Time
 
 	mu    sync.Mutex
 	head  string
@@ -37,7 +38,15 @@ type Chain struct {
 // over the same Store, or Appends made directly against the Store (bypassing
 // the Chain) — both leave the chain unable to see every link.
 func NewChain(store Store) *Chain {
-	return &Chain{store: store}
+	return newChain(store, time.Now)
+}
+
+// newChain is NewChain with an injectable clock, for tests.
+func newChain(store Store, now func() time.Time) *Chain {
+	if now == nil {
+		now = time.Now
+	}
+	return &Chain{store: store, now: now}
 }
 
 // loadHead establishes c.head from the wrapped store's current tail. Caller
@@ -89,7 +98,7 @@ func (c *Chain) Append(ctx context.Context, e *Event) error {
 		return err
 	}
 	if e.Time.IsZero() {
-		e.Time = time.Now().UTC()
+		e.Time = c.now().UTC()
 	}
 	e.PrevHash = c.head
 	e.Hash = hashEvent(e, c.head)

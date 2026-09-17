@@ -118,22 +118,10 @@ func TestImageGenerator_Verify_WrongAnswerAlsoConsumesChallenge(t *testing.T) {
 	}
 }
 
-func TestImageGenerator_Verify_Expired(t *testing.T) {
-	store := captcha.NewMemoryStore(0, 20*time.Millisecond)
-	gen := captcha.NewImageGenerator(store)
-
-	ch, err := gen.Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	answer := answerFor(t, store, ch.ID)
-
-	time.Sleep(40 * time.Millisecond)
-
-	if gen.Verify(ch.ID, answer) {
-		t.Fatal("Verify succeeded for an expired challenge")
-	}
-}
+// TestImageGenerator_Verify_Expired lives in clock_test.go (package captcha,
+// not captcha_test): it needs the unexported, clock-injectable
+// newMemoryStore constructor so it can advance a fake clock past the TTL
+// instead of sleeping on the wall clock.
 
 func TestImageGenerator_ConcurrentGenerate_NoCollisions(t *testing.T) {
 	store := captcha.NewMemoryStore(1000, time.Minute)
@@ -245,42 +233,8 @@ func TestMemoryStore_CapacityCapEnforced(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_ExpiredEntryIsPurged(t *testing.T) {
-	store := captcha.NewMemoryStore(10, 15*time.Millisecond)
-
-	if err := store.Set("id1", "answer"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if store.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1", store.Len())
-	}
-
-	time.Sleep(30 * time.Millisecond)
-
-	if got := store.Get("id1", false); got != "" {
-		t.Fatalf("Get returned %q for an expired entry, want empty", got)
-	}
-	if got := store.Len(); got != 0 {
-		t.Fatalf("Len() = %d after an expired read, want 0 (expired entries must be purged, not just hidden)", got)
-	}
-
-	// Setting a fresh entry after the ttl also purges any other expired
-	// entries left over, so the store does not grow without bound even if
-	// nothing ever reads the expired ids.
-	if err := store.Set("id2", "answer"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := store.Set("id3", "answer"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	time.Sleep(30 * time.Millisecond)
-	if err := store.Set("id4", "answer"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if got := store.Len(); got != 1 {
-		t.Fatalf("Len() = %d after inserting past ttl, want 1 (id2 and id3 should have been purged)", got)
-	}
-}
+// TestMemoryStore_ExpiredEntryIsPurged lives in clock_test.go (package
+// captcha, not captcha_test): see the comment above for why.
 
 func TestMemoryStore_DefaultsAppliedForZeroValues(t *testing.T) {
 	store := captcha.NewMemoryStore(0, 0)

@@ -71,12 +71,18 @@ func TestRegistration_FailureStillConsumesChallenge(t *testing.T) {
 func TestRegistration_ChallengeExpires(t *testing.T) {
 	ctx := context.Background()
 	creds := NewMemoryCredentialStore()
+	// Inject a fake clock into the session store so the test can advance
+	// past the TTL deterministically instead of sleeping on the wall clock
+	// — a real sleep-then-check makes pass/fail depend on how fast the
+	// machine running it happens to be.
+	now := time.Now()
+	clock := now
 	svc, err := New(Config{
 		RPID:          testRPID,
 		RPDisplayName: testDisplay,
 		RPOrigins:     []string{testOrigin},
 		Credentials:   creds,
-		Sessions:      NewMemoryStore(10, 20*time.Millisecond),
+		Sessions:      newMemoryStore(10, 20*time.Millisecond, func() time.Time { return clock }),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -85,7 +91,7 @@ func TestRegistration_ChallengeExpires(t *testing.T) {
 	dev := newDevice(testRPID, testOrigin, handle)
 
 	sessionID, body := signAttestation(t, ctx, svc, dev, handle, "K", "K")
-	time.Sleep(30 * time.Millisecond)
+	clock = now.Add(30 * time.Millisecond)
 
 	if _, err := svc.FinishRegistration(ctx, handle, sessionID, jsonRequest(body)); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("FinishRegistration after TTL expiry = %v, want ErrSessionNotFound", err)

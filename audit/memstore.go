@@ -43,6 +43,7 @@ type MemoryStore struct {
 	ttl      time.Duration
 	maxItems int
 	nextSeq  int64
+	now      func() time.Time
 }
 
 // NewMemoryStore returns a MemoryStore that keeps at most maxItems events,
@@ -50,16 +51,25 @@ type MemoryStore struct {
 // replaced with the package defaults rather than producing an unbounded
 // store.
 func NewMemoryStore(maxItems int, ttl time.Duration) *MemoryStore {
+	return newMemoryStore(maxItems, ttl, time.Now)
+}
+
+// newMemoryStore is NewMemoryStore with an injectable clock, for tests.
+func newMemoryStore(maxItems int, ttl time.Duration, now func() time.Time) *MemoryStore {
 	if maxItems <= 0 {
 		maxItems = DefaultMemoryStoreCapacity
 	}
 	if ttl <= 0 {
 		ttl = DefaultMemoryStoreTTL
 	}
+	if now == nil {
+		now = time.Now
+	}
 	return &MemoryStore{
 		order:    list.New(),
 		ttl:      ttl,
 		maxItems: maxItems,
+		now:      now,
 	}
 }
 
@@ -90,7 +100,7 @@ func (m *MemoryStore) Append(ctx context.Context, e *Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := m.now().UTC()
 	if e.Time.IsZero() {
 		e.Time = now
 	}
@@ -116,7 +126,7 @@ func (m *MemoryStore) Head(ctx context.Context) (*Event, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.evictExpired(time.Now().UTC())
+	m.evictExpired(m.now().UTC())
 	back := m.order.Back()
 	if back == nil {
 		return nil, nil
@@ -132,7 +142,7 @@ func (m *MemoryStore) Query(ctx context.Context, f Filter) ([]*Event, int, error
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.evictExpired(time.Now().UTC())
+	m.evictExpired(m.now().UTC())
 
 	total := 0
 	var matched []*Event

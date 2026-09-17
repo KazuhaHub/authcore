@@ -36,7 +36,7 @@ func doRequest(h http.Handler, remoteAddr, xff string, extraHeaders map[string]s
 // Retry-After, and once enough time has passed for the (weighted, sliding)
 // window to roll over, a fresh budget is available again.
 func TestOverLimitRejectedThenWindowRecovers(t *testing.T) {
-	const window = 150 * time.Millisecond
+	const window = 200 * time.Millisecond
 	l := New(Config{Limit: 3, Window: window})
 	h := l.Middleware(okHandler)
 
@@ -58,6 +58,17 @@ func TestOverLimitRejectedThenWindowRecovers(t *testing.T) {
 
 	// Let the sliding window roll far enough past the burst that the
 	// previous window's weighted contribution is negligible.
+	//
+	// This has to be a real sleep, not an injected clock: github.com/go-chi/
+	// httprate's RateLimiter computes both the current window (OnLimit) and
+	// the rate calculation (calculateRate) from time.Now().UTC() called
+	// directly inside the library, with no seam to override it. httprate
+	// does expose WithLimitCounter to swap the counting *backend* (e.g. for
+	// Redis), but LimitCounter.Get/Increment are still invoked by the
+	// RateLimiter with windows it derived from the real wall clock, so even
+	// a custom LimitCounter can't make this deterministic without forking
+	// the library. window is kept generous (200ms, slept 3x = 600ms) so the
+	// margin comfortably absorbs CI scheduling jitter.
 	time.Sleep(3 * window)
 
 	for i := 0; i < 3; i++ {
