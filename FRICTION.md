@@ -83,6 +83,13 @@ comment on `NewTokenVerifier` now says so.
 
 ### Package-name collision between `authcore/geoip` and every consumer's own `geoip` package
 
+**Status: resolved.** See `MIGRATION.md`'s "Import aliases" section, which
+now states the rule (alias only on an actual collision with the consumer
+file's own package name) and the convention (`authcore`-prefixed alias,
+e.g. `authcoregeoip`/`authcorecaptcha` — not the `<pkg>core` suffix this
+report originally floated below). The original finding is kept as-is below
+for the record of how it was discovered.
+
 Every migration of an `authcore/<pkg>` sub-package into a consumer that
 already has its own same-named package (RP's `internal/geoip` importing
 `authcore/geoip`, and this will repeat for `saml`, `passkey`, `audit`) forces
