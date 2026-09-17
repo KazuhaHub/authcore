@@ -6,7 +6,9 @@
 
 `authcore` is a small set of independent, infrastructure-level Go packages
 extracted from three separate services that had each reimplemented the same
-things: rate limiting, captcha issuance, and IP-to-location lookup.
+things: rate limiting, captcha issuance, IP-to-location lookup, and — as of
+`saml`, `passkey`, and `audit` — SAML/WebAuthn ceremony orchestration and
+activity logging.
 
 ## Design principle: share mechanism, not policy
 
@@ -40,15 +42,35 @@ Concretely, this means:
 
 ### Why there is no `identity` or `authflow` package
 
-Session management, login flows, password/OTP/passkey verification, token
-issuance, and anything else that has to reason about "who is this and what
-are they allowed to do" is **policy**, not mechanism — it is inseparable from
-an application's account model, which is exactly what this module refuses to
+Session management, login flows, password/OTP verification, token issuance,
+and anything else that has to reason about "who is this and what are they
+allowed to do" is **policy**, not mechanism — it is inseparable from an
+application's account model, which is exactly what this module refuses to
 know about. Bundling that here would either force every caller into one
 opinionated identity model, or quietly reintroduce the account/tenant
 vocabulary this module exists to keep out. That kind of package belongs in
 each application (or in a separate, explicitly opinionated module upstream of
 it), built on top of these mechanism packages — not inside `authcore`.
+
+This holds even for `saml`, `passkey`, and `audit`, which sit closer to
+"identity" than `ratelimit`/`captcha`/`geoip` do but keep to the same rule.
+Each is an **orchestration layer over a protocol library**
+(`crewjam/saml`, `go-webauthn/webauthn`) or a **generic event log**
+(`audit`) — never an account model:
+
+- `saml` turns a validated SAML Response into a neutral `Assertion` (NameID,
+  attributes, session index). It never decides what a NameID or attribute
+  means for your account model.
+- `passkey` runs a WebAuthn ceremony against an opaque, caller-supplied
+  **user handle** — a byte string it round-trips and never interprets — not
+  a `User` type.
+- `audit` records events tagged with opaque `ActorType`/`ActorID`/
+  `TargetType`/`TargetID` strings it never interprets, not a foreign key
+  into anyone's accounts table.
+
+None of the three know what a NameID, a user handle, or an actor ID mean
+beyond byte equality; mapping any of them onto an account is left entirely
+to the caller, exactly like every other package in this module.
 
 ## Packages
 
@@ -57,6 +79,9 @@ it), built on top of these mechanism packages — not inside `authcore`.
 | [`ratelimit`](./ratelimit) | `net/http` rate-limiting middleware, keyed by an opaque string (default: trusted-proxy-aware client IP) | [`go-chi/httprate`](https://github.com/go-chi/httprate), [`go-chi/chi/v5/middleware`](https://github.com/go-chi/chi) |
 | [`captcha`](./captcha) | Self-hosted image captcha: issue a challenge, verify a single-use answer | [`mojocn/base64Captcha`](https://github.com/mojocn/base64Captcha) |
 | [`geoip`](./geoip) | Offline IP-to-location lookup against a local MaxMind-format (`.mmdb`) database, with optional hot-reload | [`oschwald/maxminddb-golang`](https://github.com/oschwald/maxminddb-golang) |
+| [`saml`](./saml) | SAML 2.0 Service Provider orchestration: AuthnRequest issuance, SP metadata, Response/Assertion validation with replay, multi-assertion, decompression-bomb and weak-signature defenses `crewjam/saml` leaves to the caller | [`crewjam/saml`](https://github.com/crewjam/saml) |
+| [`passkey`](./passkey) | WebAuthn ceremony orchestration: registration, allow-listed login, and discoverable (usernameless) login, keyed by an opaque user handle | [`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) |
+| [`audit`](./audit) | Application-agnostic activity log: pluggable `Store`, opaque actor/target fields, an optional SHA-256 hash-chain decorator for tamper-evidence | stdlib only |
 
 Each package has its own doc comment with the full design rationale; the
 table above is just a map to find the right one.
@@ -67,6 +92,9 @@ table above is just a map to find the right one.
 go get github.com/KazuhaHub/authcore/ratelimit
 go get github.com/KazuhaHub/authcore/captcha
 go get github.com/KazuhaHub/authcore/geoip
+go get github.com/KazuhaHub/authcore/saml
+go get github.com/KazuhaHub/authcore/passkey
+go get github.com/KazuhaHub/authcore/audit
 ```
 
 Each package is imported and versioned independently (they're leaves in one
@@ -189,6 +217,233 @@ defer w.Close()
 loc := w.Lookup("203.0.113.1") // never errors; empty Location on any failure
 ```
 
+### `saml`
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	crewjamsaml "github.com/crewjam/saml"
+
+	"github.com/KazuhaHub/authcore/saml"
+)
+
+// fetchIDPMetadata fetches and parses the IdP's metadata XML however your
+// deployment keeps it current (a periodic fetch, a static file, ...).
+// This package only consumes the parsed result.
+func fetchIDPMetadata() *crewjamsaml.EntityDescriptor {
+	return &crewjamsaml.EntityDescriptor{EntityID: "https://idp.example.com/saml/metadata"}
+}
+
+// possibleRequestIDsFor looks up which AuthnRequest.ID values are still
+// outstanding for this browser (e.g. from a cookie-bound server-side
+// store). Leave it empty to only accept IdP-initiated flows (with
+// Config.AllowIDPInitiated set).
+func possibleRequestIDsFor(r *http.Request) []string {
+	return nil
+}
+
+func main() {
+	provider, err := saml.New(saml.Config{
+		EntityID:    "https://sp.example.com/saml/metadata",
+		ACSURL:      "https://sp.example.com/saml/acs",
+		IDPMetadata: fetchIDPMetadata(),
+		// ReplayCache defaults to a bounded saml.MemoryReplayCache when nil.
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	http.HandleFunc("/saml/login", func(w http.ResponseWriter, r *http.Request) {
+		req, err := provider.NewAuthnRequest(r.URL.Query().Get("relay"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Persist req.ID so it can be returned from possibleRequestIDsFor later.
+		http.Redirect(w, r, req.RedirectURL, http.StatusFound)
+	})
+
+	http.HandleFunc("/saml/acs", func(w http.ResponseWriter, r *http.Request) {
+		assertion, err := provider.ValidateResponse(context.Background(), r, possibleRequestIDsFor(r))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		// Map assertion.NameID / assertion.Attribute("...") onto your own
+		// account model here — this package never does that mapping for you.
+		fmt.Fprintf(w, "authenticated: %s", assertion.NameID)
+	})
+
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+`Provider.ValidateResponse` closes gaps `crewjam/saml` leaves open by
+design: assertion replay (via `ReplayCache`), a Response smuggling more than
+one `Assertion`/`EncryptedAssertion`, a DEFLATE decompression bomb on the
+redirect binding, an absent `Destination`, and SHA-1 signature algorithms —
+see the package doc for exactly what each `Config` flag controls.
+
+### `passkey`
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/KazuhaHub/authcore/passkey"
+)
+
+func main() {
+	svc, err := passkey.New(passkey.Config{
+		RPID:          "example.com",
+		RPDisplayName: "Example Co",
+		RPOrigins:     []string{"https://example.com"},
+		// Credentials is the only required field with no in-memory default;
+		// a real deployment backs it with its own SQL table.
+		Credentials: passkey.NewMemoryCredentialStore(),
+		// Sessions defaults to a bounded passkey.DefaultMemoryStore() when nil.
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// handleFor resolves the opaque WebAuthn user handle for the caller's
+	// own already-authenticated account — this package never derives it.
+	handleFor := func(r *http.Request) []byte { return []byte("account-42") }
+
+	http.HandleFunc("/passkeys/register/begin", func(w http.ResponseWriter, r *http.Request) {
+		creation, sessionID, err := svc.BeginRegistration(r.Context(), handleFor(r), "alice", "Alice")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Persist sessionID (e.g. in a short-lived cookie) and send creation
+		// to the browser's navigator.credentials.create().
+		w.Header().Set("X-Passkey-Session", sessionID)
+		json.NewEncoder(w).Encode(creation)
+	})
+
+	http.HandleFunc("/passkeys/register/finish", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.Header.Get("X-Passkey-Session")
+		if _, err := svc.FinishRegistration(r.Context(), handleFor(r), sessionID, r); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// A "passkey proper" (usernameless) sign-in flow:
+	http.HandleFunc("/passkeys/login/begin", func(w http.ResponseWriter, r *http.Request) {
+		// Unlike a second factor behind a password, a discoverable login is
+		// the only factor, so it should require user verification explicitly.
+		assertion, sessionID, err := svc.BeginDiscoverableLogin(r.Context(),
+			webauthn.WithUserVerification(protocol.VerificationRequired))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("X-Passkey-Session", sessionID)
+		json.NewEncoder(w).Encode(assertion)
+	})
+
+	http.HandleFunc("/passkeys/login/finish", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.Header.Get("X-Passkey-Session")
+		result, err := svc.FinishDiscoverableLogin(r.Context(), sessionID, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if result.Credential.Authenticator.CloneWarning {
+			// Decide what a possible cloned credential means for your own
+			// account model — this package only surfaces the signal.
+		}
+		fmt.Fprintf(w, "signed in as handle %q", result.UserHandle)
+	})
+
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+`passkey.NewMemoryCredentialStore` is for development/tests only (it never
+evicts — a credential is permanent data, not a cache entry); implement
+`passkey.CredentialStore` against your own table for production. See the
+package doc for why `protocol.VerificationPreferred` (the default) is *not*
+enforced server-side, and why that matters specifically for a discoverable
+login.
+
+### `audit`
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/KazuhaHub/authcore/audit"
+)
+
+func main() {
+	// NewMemoryStore is bounded (TTL + capacity), good for a single
+	// process; a real deployment implements audit.Store against its own
+	// SQL table and gets the same API.
+	store := audit.NewMemoryStore(0, 0) // 0, 0 = package defaults
+
+	// Chain wraps any Store with a SHA-256 hash chain, so a later Verify
+	// call can detect an edited, reordered, or deleted row since it was
+	// written (see the package doc for exactly what this does and does not
+	// prove).
+	log := audit.NewChain(store)
+
+	ctx := context.Background()
+	err := log.Append(ctx, &audit.Event{
+		Action:     "session.create",
+		ActorType:  "user",
+		ActorID:    "42",
+		ActorLabel: "alice@example.com",
+		TargetType: "session",
+		TargetID:   "sess_abc123",
+		IP:         "203.0.113.1", // RFC 5737 documentation address
+		Payload:    audit.Marshal(map[string]any{"method": "passkey"}),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	events, total, err := log.Query(ctx, audit.Filter{ActorType: "user", ActorID: "42", Limit: 20})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%d/%d events for actor 42\n", len(events), total)
+
+	// Periodically (or before trusting an export), confirm nothing in the
+	// chain has been altered since the last checkpoint:
+	result, err := audit.Verify(ctx, log, audit.Filter{}, "" /* genesis: no prior anchor */)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("chain OK:", result.OK)
+}
+```
+
+`ActorType`/`ActorID`/`TargetType`/`TargetID` are opaque strings this
+package never interprets — define whatever vocabulary your own application
+needs. `Verify`'s `anchor` parameter exists so a scoped or paginated
+`Verify` call (or one run after old entries were pruned) does not falsely
+report a break at the first event it happens to see; see the package doc.
+
 
 ## Dependency policy
 
@@ -199,9 +454,19 @@ concern, not housekeeping.
 
 - **Security-sensitive libraries are pinned to the latest release** and are
   updated in their own pull request, never batched with unrelated bumps. This
-  currently covers `github.com/crewjam/saml`, `github.com/go-webauthn/webauthn`,
-  `github.com/coreos/go-oidc/v3` and `github.com/russellhaering/goxmldsig`
-  (the latter three arrive with the `saml`, `passkey` and `oidc` packages).
+  currently covers:
+  - `github.com/crewjam/saml` **v0.5.1** — SAML orchestration (`saml`)
+  - `github.com/russellhaering/goxmldsig` **v1.4.0** — XML digital signature
+    verification, a `crewjam/saml` dependency (`saml`)
+  - `github.com/go-webauthn/webauthn` **v0.18.1** — WebAuthn ceremony
+    library (`passkey`)
+  - `github.com/coreos/go-oidc/v3` — reserved for the forthcoming `oidc`
+    package; not yet a dependency of this module.
+
+  `github.com/descope/virtualwebauthn` is pinned the same way but is a
+  **test-only** dependency of `passkey` (a real virtual authenticator used
+  to exercise genuine WebAuthn ceremonies in tests) — it never ships in a
+  binary that imports this module.
 - **Dependabot runs weekly** for both Go modules and GitHub Actions; see
   `.github/dependabot.yml`. Minor and patch bumps of non-identity libraries are
   grouped to keep review noise down.
@@ -235,8 +500,8 @@ policy concept into the shared API. Before sending a change:
   domain, or credential.
 - If a change adds a dependency, prefer an established library over a new
   hand-rolled implementation, consistent with how each package already
-  favors `httprate`, `base64Captcha`, and `maxminddb-golang` over
-  reimplementing their algorithms.
+  favors `httprate`, `base64Captcha`, `maxminddb-golang`, `crewjam/saml`,
+  and `go-webauthn/webauthn` over reimplementing their algorithms.
 
 ## License
 

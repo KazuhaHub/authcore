@@ -57,6 +57,7 @@ type MemoryStore struct {
 	order    *list.List // ids in insertion order; front is oldest
 	ttl      time.Duration
 	maxItems int
+	now      func() time.Time
 }
 
 // DefaultMemoryStoreTTL and DefaultMemoryStoreCapacity are the bounds
@@ -70,18 +71,7 @@ const (
 // each expiring ttl after it was set. maxItems <= 0 or ttl <= 0 are replaced
 // with the package defaults rather than producing an unbounded store.
 func NewMemoryStore(maxItems int, ttl time.Duration) *MemoryStore {
-	if maxItems <= 0 {
-		maxItems = DefaultMemoryStoreCapacity
-	}
-	if ttl <= 0 {
-		ttl = DefaultMemoryStoreTTL
-	}
-	return &MemoryStore{
-		items:    make(map[string]*entry),
-		order:    list.New(),
-		ttl:      ttl,
-		maxItems: maxItems,
-	}
+	return newMemoryStore(maxItems, ttl, time.Now)
 }
 
 // DefaultMemoryStore returns a MemoryStore using the package's default TTL and
@@ -90,12 +80,33 @@ func DefaultMemoryStore() *MemoryStore {
 	return NewMemoryStore(DefaultMemoryStoreCapacity, DefaultMemoryStoreTTL)
 }
 
+// newMemoryStore is NewMemoryStore with an injectable clock, for tests.
+func newMemoryStore(maxItems int, ttl time.Duration, now func() time.Time) *MemoryStore {
+	if maxItems <= 0 {
+		maxItems = DefaultMemoryStoreCapacity
+	}
+	if ttl <= 0 {
+		ttl = DefaultMemoryStoreTTL
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &MemoryStore{
+		items:    make(map[string]*entry),
+		order:    list.New(),
+		ttl:      ttl,
+		maxItems: maxItems,
+		now:      now,
+	}
+}
+
 // Set implements Store.
 func (s *MemoryStore) Set(id, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.purgeExpiredLocked(time.Now())
+	now := s.now()
+	s.purgeExpiredLocked(now)
 
 	// Replacing an existing id: drop its old list node first so it doesn't
 	// linger as a duplicate.
@@ -115,7 +126,7 @@ func (s *MemoryStore) Set(id, value string) error {
 	}
 
 	elem := s.order.PushBack(id)
-	s.items[id] = &entry{value: value, expiresAt: time.Now().Add(s.ttl), elem: elem}
+	s.items[id] = &entry{value: value, expiresAt: now.Add(s.ttl), elem: elem}
 	return nil
 }
 
@@ -128,7 +139,7 @@ func (s *MemoryStore) Get(id string, clear bool) string {
 	if !ok {
 		return ""
 	}
-	if time.Now().After(e.expiresAt) {
+	if s.now().After(e.expiresAt) {
 		s.deleteLocked(id, e)
 		return ""
 	}
