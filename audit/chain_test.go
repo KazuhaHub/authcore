@@ -2,12 +2,22 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// fixedClock returns a clock function that always reports t, for tests
+// that must not depend on the wall clock (Chain and MemoryStore both take
+// an injectable clock via their unexported newChain/newMemoryStore
+// constructors for exactly this reason).
+func fixedClock(t time.Time) func() time.Time {
+	return func() time.Time { return t }
+}
 
 // sliceReader is a minimal Reader over a fixed, directly-mutable slice, used
 // to test Verify against hand-built (and hand-tampered) chains without
@@ -413,5 +423,177 @@ func TestChain_IdenticalContentDistinctHashes(t *testing.T) {
 	}
 	if b.PrevHash != a.Hash {
 		t.Fatalf("second event must link to the first: PrevHash=%q, first hash=%q", b.PrevHash, a.Hash)
+	}
+}
+
+// dropsChainFieldsStore wraps a *MemoryStore but strips PrevHash/Hash from
+// every Event before forwarding it to Append — the exact shape of the
+// Report Portal audit_log adapter that motivated this check: its table
+// simply has no columns for either field, so a Chain's computed hashes
+// never reach storage even though Append returns nil and nothing else
+// about the write looks wrong. It does not implement HeadReader, so a
+// Chain wrapping it must fall back to Query for its read-back.
+type dropsChainFieldsStore struct {
+	inner *MemoryStore
+}
+
+func (d *dropsChainFieldsStore) Append(ctx context.Context, e *Event) error {
+	cp := *e
+	cp.PrevHash = ""
+	cp.Hash = ""
+	if err := d.inner.Append(ctx, &cp); err != nil {
+		return err
+	}
+	// A real adapter still assigns Seq/Time as any compliant Store must;
+	// only PrevHash/Hash are the ones being dropped.
+	e.Seq = cp.Seq
+	e.Time = cp.Time
+	return nil
+}
+
+func (d *dropsChainFieldsStore) Query(ctx context.Context, f Filter) ([]*Event, int, error) {
+	return d.inner.Query(ctx, f)
+}
+
+// dropsChainFieldsHeadStore is dropsChainFieldsStore plus a HeadReader
+// implementation, so a test can exercise the integrity check's HeadReader
+// branch (not just the Query fallback) against a Store that drops the
+// chain fields.
+type dropsChainFieldsHeadStore struct {
+	dropsChainFieldsStore
+}
+
+func (d *dropsChainFieldsHeadStore) Head(ctx context.Context) (*Event, error) {
+	return d.inner.Head(ctx)
+}
+
+// The central regression test: a Store shaped like Report Portal's
+// audit_log adapter (no columns for PrevHash/Hash, so Append silently
+// drops them) must be caught on the first Append, with a clear sentinel
+// error — not discovered later, and not later still, only when someone
+// happens to call Verify.
+func TestChain_DetectsStoreThatDropsChainFields(t *testing.T) {
+	ctx := context.Background()
+	fixed := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := &dropsChainFieldsStore{inner: newMemoryStore(0, time.Hour, fixed)}
+	c := newChain(store, fixed)
+
+	err := c.Append(ctx, &Event{Action: "session.create"})
+	if !errors.Is(err, ErrStoreDropsChainFields) {
+		t.Fatalf("Append against a field-dropping store = %v, want ErrStoreDropsChainFields", err)
+	}
+	// The error must tell an operator which two fields the adapter needs
+	// to add storage for.
+	if !strings.Contains(err.Error(), "PrevHash") || !strings.Contains(err.Error(), "Hash") {
+		t.Fatalf("error message = %q, want it to name PrevHash and Hash", err.Error())
+	}
+}
+
+// Same defect, but on a Store that also implements HeadReader (like
+// MemoryStore does): the integrity check must catch it via the HeadReader
+// branch of its read-back, not only the Query fallback.
+func TestChain_DetectsStoreThatDropsChainFieldsViaHeadReader(t *testing.T) {
+	ctx := context.Background()
+	fixed := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := &dropsChainFieldsHeadStore{dropsChainFieldsStore{inner: newMemoryStore(0, time.Hour, fixed)}}
+	c := newChain(store, fixed)
+
+	err := c.Append(ctx, &Event{Action: "session.create"})
+	if !errors.Is(err, ErrStoreDropsChainFields) {
+		t.Fatalf("Append against a field-dropping HeadReader store = %v, want ErrStoreDropsChainFields", err)
+	}
+}
+
+// A compliant Store (MemoryStore, and the same Store via the Query
+// fallback with HeadReader hidden) must never trip the integrity check.
+func TestChain_IntegrityCheckPassesForCompliantStore(t *testing.T) {
+	ctx := context.Background()
+	fixed := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	for name, store := range map[string]Store{
+		"MemoryStore (HeadReader path)": newMemoryStore(0, time.Hour, fixed),
+		"plainStore (Query fallback)":   plainStore{newMemoryStore(0, time.Hour, fixed)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newChain(store, fixed)
+			for i := 0; i < 3; i++ {
+				e := &Event{Action: "session.create", ActorID: fmt.Sprint(i)}
+				if err := c.Append(ctx, e); err != nil {
+					t.Fatalf("append %d against a compliant store: unexpected error %v", i, err)
+				}
+			}
+		})
+	}
+}
+
+// countingHeadStore wraps a *MemoryStore and counts calls to Head/Query,
+// so a test can assert the integrity check's read-back happens exactly
+// once per Chain, no matter how many Appends follow.
+type countingHeadStore struct {
+	*MemoryStore
+	heads   int32
+	queries int32
+}
+
+func (c *countingHeadStore) Head(ctx context.Context) (*Event, error) {
+	atomic.AddInt32(&c.heads, 1)
+	return c.MemoryStore.Head(ctx)
+}
+
+func (c *countingHeadStore) Query(ctx context.Context, f Filter) ([]*Event, int, error) {
+	atomic.AddInt32(&c.queries, 1)
+	return c.MemoryStore.Query(ctx, f)
+}
+
+// The integrity check must run at most once per Chain: extra Appends
+// beyond the first must not perform an extra read.
+func TestChain_IntegrityCheckRunsOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	fixed := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	cs := &countingHeadStore{MemoryStore: newMemoryStore(0, time.Hour, fixed)}
+	c := newChain(cs, fixed)
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		if err := c.Append(ctx, &Event{Action: "session.create", ActorID: fmt.Sprint(i)}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	// Exactly 2 Head calls total across n Appends: loadHead's own
+	// current-tail lookup (once, on the first Append only — it latches via
+	// c.ready) plus the integrity check's read-back (once, on the first
+	// Append only — it latches via c.checked). Every Append after the
+	// first skips both, however many more there are.
+	if got := atomic.LoadInt32(&cs.heads); got != 2 {
+		t.Fatalf("Head called %d times across %d Appends, want exactly 2 (loadHead once + integrity check once)", got, n)
+	}
+	if got := atomic.LoadInt32(&cs.queries); got != 0 {
+		t.Fatalf("Query called %d times, want 0: the HeadReader path should be used throughout, never the Query fallback", got)
+	}
+}
+
+// WithoutStoreIntegrityCheck must actually suppress the check: Append
+// against a field-dropping store succeeds when the option is set (the
+// tradeoff the option exists to offer), even though the dropped fields
+// are real and would otherwise make Verify fail later.
+func TestChain_WithoutStoreIntegrityCheckDisablesDetection(t *testing.T) {
+	ctx := context.Background()
+	fixed := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := &dropsChainFieldsStore{inner: newMemoryStore(0, time.Hour, fixed)}
+	c := newChain(store, fixed, WithoutStoreIntegrityCheck())
+
+	if err := c.Append(ctx, &Event{Action: "session.create"}); err != nil {
+		t.Fatalf("Append with the integrity check disabled = %v, want nil", err)
+	}
+
+	// Confirm this test is actually exercising the option and not just
+	// passing by accident: the fields really were dropped, so Verify must
+	// still catch the resulting hash mismatch.
+	res, err := Verify(ctx, store, Filter{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatal("expected Verify to detect the store's dropped hash even with the Chain integrity check disabled")
 	}
 }

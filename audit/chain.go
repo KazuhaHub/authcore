@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,29 +26,95 @@ import (
 // a plain Store or a *Chain wherever a Store is expected. A *Chain's own
 // Query is a passthrough to the wrapped Store — filtering and pagination
 // are unaffected by chaining.
+//
+// # Detecting a Store that silently drops the chain fields
+//
+// The wrapped Store is required to persist PrevHash/Hash and return them
+// unchanged on later reads (see Store.Append's doc comment) — but nothing
+// stops a non-compliant adapter from implementing Store, accepting an
+// Event with those fields set, and quietly not storing them (e.g. because
+// its table has no column for either one). That failure is silent at
+// write time: Append returns nil, the chain looks like it's working, and
+// the loss is only ever discovered later, by Verify, when it's too late
+// to recover the missing hashes.
+//
+// To catch this early, Chain reads back the event from its own first
+// successful Append and compares the stored Hash/PrevHash to what it
+// wrote. A mismatch returns ErrStoreDropsChainFields instead of nil,
+// right at the first Append, instead of leaving the discovery to whoever
+// happens to run Verify much later. This costs exactly one extra read,
+// and only once per Chain — every Append after the first (successful, or
+// conclusive) check skips it entirely. Pass WithoutStoreIntegrityCheck to
+// NewChain to disable it, which only makes sense for a Store already
+// known to persist these fields correctly by other means (its own test
+// suite, or a battle-tested implementation like MemoryStore) where even
+// that single extra read is unwanted.
 type Chain struct {
-	store Store
-	now   func() time.Time
+	store              Store
+	now                func() time.Time
+	skipIntegrityCheck bool
 
-	mu    sync.Mutex
-	head  string
-	ready bool
+	mu      sync.Mutex
+	head    string
+	ready   bool
+	checked bool // the store-persists-chain-fields check has run conclusively
 }
+
+// ChainOption configures a Chain built by NewChain.
+type ChainOption func(*Chain)
+
+// WithoutStoreIntegrityCheck disables the one-time read-back check Chain
+// otherwise performs after its first successful Append, which confirms
+// the wrapped Store actually persists PrevHash/Hash instead of silently
+// discarding them (see the Chain doc comment and ErrStoreDropsChainFields).
+//
+// Only disable this for a Store you already know persists these fields
+// correctly through some other means — its own test suite covering this
+// exact case, or a well-established implementation such as MemoryStore —
+// where the one extra read on the first Append is unwanted overhead. For
+// any Store whose persistence of PrevHash/Hash has not been independently
+// verified, leave the check enabled: it is exactly the situation it
+// exists to catch, and it only ever costs one read, one time.
+func WithoutStoreIntegrityCheck() ChainOption {
+	return func(c *Chain) { c.skipIntegrityCheck = true }
+}
+
+// ErrStoreDropsChainFields is returned by Chain.Append when the wrapped
+// Store's Append accepts an Event with PrevHash/Hash set but does not
+// actually persist them: reading the just-appended event back (see the
+// Chain doc comment) shows different values than what Chain wrote. This
+// means the chain is not being recorded at all — Verify will fail on this
+// event, and everything appended after it, as soon as anyone runs it, and
+// by then the real hashes cannot be recovered.
+//
+// The fix belongs in the Store: add a place to persist PrevHash and Hash
+// (e.g. two more columns on a SQL adapter's table) and have Append save
+// whatever value is already set on the *Event it's given — Chain computes
+// both fields before calling Store.Append, so the Store only has to store
+// and return them, never compute them itself.
+//
+// See WithoutStoreIntegrityCheck to disable the check that produces this
+// error.
+var ErrStoreDropsChainFields = errors.New("audit: store does not persist PrevHash/Hash set by Chain (see Chain doc comment and WithoutStoreIntegrityCheck)")
 
 // NewChain wraps store so that Appends made through the returned Chain are
 // hash-linked. Wrap the innermost Store once; do not layer multiple Chains
 // over the same Store, or Appends made directly against the Store (bypassing
 // the Chain) — both leave the chain unable to see every link.
-func NewChain(store Store) *Chain {
-	return newChain(store, time.Now)
+func NewChain(store Store, opts ...ChainOption) *Chain {
+	return newChain(store, time.Now, opts...)
 }
 
 // newChain is NewChain with an injectable clock, for tests.
-func newChain(store Store, now func() time.Time) *Chain {
+func newChain(store Store, now func() time.Time, opts ...ChainOption) *Chain {
 	if now == nil {
 		now = time.Now
 	}
-	return &Chain{store: store, now: now}
+	c := &Chain{store: store, now: now}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // loadHead establishes c.head from the wrapped store's current tail. Caller
@@ -107,7 +175,85 @@ func (c *Chain) Append(ctx context.Context, e *Event) error {
 		return err
 	}
 	c.head = e.Hash
+
+	if !c.checked && !c.skipIntegrityCheck {
+		if err := c.checkStorePersistsChainFields(ctx, e); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// checkStorePersistsChainFields is Chain's one-time defense against a
+// Store whose Append silently discards PrevHash/Hash instead of
+// persisting them — see the Chain doc comment and ErrStoreDropsChainFields
+// for what this protects against and why it matters. Called with c.mu
+// already held, right after a successful c.store.Append(ctx, want).
+//
+// It reads back the event that was just appended and compares its
+// PrevHash/Hash to what Chain computed and handed to Store.Append. A
+// mismatch means the Store dropped the fields, so this returns
+// ErrStoreDropsChainFields.
+//
+// The read itself is inherently best-effort: a Query or HeadReader error,
+// or a read that doesn't conclusively identify the event just written
+// (see readBack), is not proof the Store is broken, so c.checked is only
+// latched once the read is conclusive — an inconclusive attempt is simply
+// retried on the next Append, rather than either failing Append on an
+// unrelated transient error or never catching a genuinely broken Store
+// because one read happened to be inconclusive.
+func (c *Chain) checkStorePersistsChainFields(ctx context.Context, want *Event) error {
+	got, ok, err := c.readBack(ctx, want.Seq)
+	if err != nil || !ok {
+		return nil
+	}
+	c.checked = true
+	if got.Hash == want.Hash && got.PrevHash == want.PrevHash {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: appended event Seq=%d with Hash=%q PrevHash=%q, but reading it back returned Hash=%q PrevHash=%q",
+		ErrStoreDropsChainFields, want.Seq, want.Hash, want.PrevHash, got.Hash, got.PrevHash)
+}
+
+// readBack fetches the event with the given Seq as the Store itself
+// stored it, so checkStorePersistsChainFields can compare what Chain
+// wrote against what actually made it to storage.
+//
+// It prefers HeadReader when the Store implements it — mirroring
+// loadHead's own preference — since right after our own Append (under
+// c.mu, so nothing else can have appended through this Chain in between)
+// the head IS the event we just wrote: one targeted read, no query
+// filter semantics to depend on. Without HeadReader it falls back to
+// Query(Filter{AfterSeq: seq-1, Limit: 1}), which the Reader contract
+// (ascending Seq order) already guarantees returns that same event first
+// — the same contract Verify itself depends on, so nothing new is being
+// assumed of the Store here.
+//
+// ok is false whenever the read doesn't conclusively identify that exact
+// event (no HeadReader/Query error, but an empty result or a Seq that
+// doesn't match) — for instance another writer appending directly to the
+// Store outside this Chain between our write and our read-back. That is
+// reported as inconclusive, not as a dropped-fields failure.
+func (c *Chain) readBack(ctx context.Context, seq int64) (*Event, bool, error) {
+	if hr, ok := c.store.(HeadReader); ok {
+		e, err := hr.Head(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		if e == nil || e.Seq != seq {
+			return nil, false, nil
+		}
+		return e, true, nil
+	}
+	events, _, err := c.store.Query(ctx, Filter{AfterSeq: seq - 1, Limit: 1})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(events) != 1 || events[0].Seq != seq {
+		return nil, false, nil
+	}
+	return events[0], true, nil
 }
 
 // Query implements Reader by delegating to the wrapped Store.

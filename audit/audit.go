@@ -193,9 +193,28 @@ type Store interface {
 	// Append adds e to the log. It assigns e.Seq and, if e.Time is zero,
 	// e.Time; both are visible to the caller after Append returns.
 	// Implementations must reject an Event with an empty Action.
-	// Append must not otherwise mutate e — in particular, setting
-	// PrevHash/Hash is Chain's job, not the Store's, so that a Store can
-	// be used chained or unchained with no code difference on its side.
+	// Append must not otherwise mutate e.
+	//
+	// Store.Append itself never sets, reads, or interprets PrevHash/Hash —
+	// computing them is Chain's job, not the Store's. But when a Store is
+	// wrapped in a Chain, Chain sets both fields on e BEFORE calling
+	// Store.Append, and Append MUST persist them verbatim and return them
+	// unchanged from every later Query/HeadReader read of that event,
+	// exactly like every other field on Event. A Store whose schema simply
+	// has no column for PrevHash/Hash and drops them on the write path is
+	// NOT a compliant implementation, even though nothing about that looks
+	// wrong at write time: Append still returns nil, the chain still
+	// "looks" like it's working, and the loss is only discovered later —
+	// by Verify, or by Chain's own one-time startup check (see
+	// ErrStoreDropsChainFields) — by which point the real hashes are gone
+	// and cannot be reconstructed.
+	//
+	// A Store's Append CODE does not need to change between chained and
+	// unchained use — it never computes, branches on, or requires
+	// PrevHash/Hash to be present. But its SCHEMA does need a place to put
+	// them if it is ever going to be used underneath a Chain; "no code
+	// difference" was never a promise that those two fields could be
+	// silently discarded.
 	Append(ctx context.Context, e *Event) error
 }
 
