@@ -240,6 +240,17 @@ type TokenVerifier struct {
 // ProviderHCaptcha) unless WithEndpoint is also given, in which case
 // provider is only used as a label — the endpoint it names is never
 // resolved.
+//
+// Constructing one of these per request is fine, and is what a caller with
+// live-reloadable configuration has to do, since the secret and the allowed
+// hostnames are fixed here. The http.Client built when WithHTTPClient is
+// omitted has a nil Transport, so it shares http.DefaultTransport's connection
+// pool with every other client built the same way: 50 sequential verifications
+// through 50 freshly built verifiers open one connection, not 50.
+//
+// Supplying WithHTTPClient with a client that carries its own
+// &http.Transport{}, and constructing per request, is the case that does leak
+// a pool per request. Share that client, or leave the Transport nil.
 func NewTokenVerifier(provider Provider, secret string, opts ...TokenOption) (*TokenVerifier, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
