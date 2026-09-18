@@ -1,8 +1,11 @@
 # 3. Extract clientip, remove ratelimit
 
 Date: 2026-09-17
-Status: **accepted** (2026-09-17). The repository owner ruled on this the same day.
-Supersedes: the `ratelimit` package, if accepted
+Status: **accepted, then partly superseded the same day.** The `ratelimit` removal
+stands. The `clientip` extraction was reverted once it was measured against the
+exit criteria below — see [Outcome](#outcome), which is the point of writing
+those criteria down before the code existed.
+Supersedes: the `ratelimit` package
 
 ## Context
 
@@ -102,3 +105,61 @@ settled and only the *mechanism* is duplicated.
   from AlertHub as the first consumer.
 - Until a second consumer adopts it, `authcore/clientip` is a hypothesis, not a
   shared package — and the exit criteria above say what happens next.
+
+## Outcome
+
+Written after the fact, the same day.
+
+`ratelimit` was removed exactly as decided. `clientip` was built, shipped in
+v0.2.0, and AlertHub adopted it — one consumer, which the criteria above say is
+not yet a shared package.
+
+Report-Portal was then attempted as the second consumer, and **exit criterion 2
+fired**: it cannot adopt this package and keep a behaviour it documents.
+
+Report-Portal supports a `trusted_proxies: "all"` token — trust every peer —
+for a listener that genuinely cannot be reached except through a proxy. Its
+walk and this package's walk agree in every bounded configuration, and were
+measured agreeing on three chains including the unparseable-hop case. They
+diverge only when every hop is trusted:
+
+```
+peer 127.0.0.1 (trusted), X-Forwarded-For: "1.1.1.1, 203.0.113.9"
+
+  bounded trust set   clientip = 203.0.113.9      report-portal = 203.0.113.9   agree
+  "all"               clientip = 127.0.0.1        report-portal = 1.1.1.1       DIVERGE
+```
+
+Neither answer is good. With every hop trusted there is no boundary to find, so
+this package falls back to the peer: behind a proxy that makes every client the
+same address, which is the collapsed-limiter defect AlertHub#18 was written to
+fix. Report-Portal walks to the leftmost entry instead, which keeps the limiter
+working but hands it a value the client chose.
+
+Resolving it meant either deleting `all` (a behaviour change to a documented,
+security-relevant option) or changing this package's fallback (which would make
+it return an attacker-influenced value in the bounded case too). The owner chose
+neither: **keep `all`, and move `clientip` back out of authcore.**
+
+So by criterion 2, the extraction is reversed. `clientip` is not a shared
+package; it is AlertHub's private client-address logic, and it lives there.
+`authcore` returns to four packages.
+
+### What this exercise was worth
+
+The extraction cost roughly a day and produced a net deletion in the end. It
+bought a measurement that reasoning had not produced: the two implementations
+are equivalent, *except* under a deployment mode one of them documents, and the
+divergence is invisible to anyone comparing signatures or reading either
+implementation alone.
+
+That is the same lesson as `audit` (ADR 2), reached from the other direction.
+`audit` failed because the shared type could not carry a field its consumer
+needed. `clientip` failed because the shared walk could not carry a policy its
+consumer had chosen. Both were found by measuring against a real consumer rather
+than against a plausible one, and both were found before a third service was
+asked to adopt anything.
+
+The rule worth keeping: **write the exit criteria before the code, and run them
+against a consumer that already exists.** The criteria here were the only reason
+this was caught in a day rather than after a migration into three services.

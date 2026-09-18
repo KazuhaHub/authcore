@@ -1417,3 +1417,64 @@ service adopts it, it is private code in the wrong repository.
 `go-chi/httprate`, which is fine. It is a package whose *boundary* was drawn in the wrong place.
 That is a different failure from `audit`'s, which could not carry the data it needed to carry. Both
 ended in removal, and the two reasons should not be conflated when the next package is proposed.
+
+---
+
+## clientip — the extraction that failed its own exit criteria
+
+Short entry, and the most useful one in this file.
+
+`clientip` was built on ADR 3's reasoning: four services implement
+client-IP-behind-a-proxy, they diverge on adversarial input, and the shareable
+unit is the walk plus the misconfiguration signal rather than the limiter. It
+shipped in v0.2.0 with AlertHub as its first consumer.
+
+Report-Portal was then tried as the second, and could not adopt it.
+
+### The measurement
+
+Report-Portal's walk and clientip's walk were run side by side over the same
+inputs. In every bounded configuration they agree — single hop, two-hop chain
+with a forged leftmost value, and an unparseable hop in the middle. They diverge
+in exactly one place: when **every** hop is trusted.
+
+```
+peer 127.0.0.1 (trusted), X-Forwarded-For: "1.1.1.1, 203.0.113.9"
+
+  bounded trust set   clientip = 203.0.113.9   report-portal = 203.0.113.9   agree
+  all trusted         clientip = 127.0.0.1     report-portal = 1.1.1.1       DIVERGE
+```
+
+With every hop trusted there is no boundary left to find, so clientip falls back
+to the peer. Report-Portal walks to the leftmost entry instead. Both are bad:
+the first collapses every client behind a proxy into one rate-limit bucket,
+which is the defect AlertHub#18 exists to fix; the second returns a value the
+client wrote itself.
+
+Report-Portal documents `trusted_proxies: "all"` as an opt-in mode with a boot
+warning, so it is a real deployment, not a hypothetical.
+
+### Why it was not worked around
+
+The two resolutions were to delete `all` from Report-Portal (a behaviour change
+to a documented, security-relevant option) or to change clientip's fallback to
+match (which would make it return an attacker-influenced value in the bounded
+case as well, where today it correctly returns the peer). Neither is a library's
+call to make about an application.
+
+The owner kept `all` and moved `clientip` back out of authcore, which is what
+exit criterion 2 in ADR 3 says to do when only one service adopts it.
+
+### What is worth keeping from this
+
+- **Write the exit criteria before the code.** They are why this took a day
+  instead of a migration into three services.
+- **Run them against a consumer that already exists**, not a plausible one. The
+  divergence is invisible from signatures, from either implementation read
+  alone, and from the diff — it shows up only when both run on the same input.
+- The failure is a different shape from `audit`'s. `audit` could not carry a
+  field; `clientip` could not carry a policy. Both were found by measuring, and
+  neither is a flaw in the code that was written.
+
+`ratelimit` removal stands. Everything else in ADR 3 is superseded by its own
+Outcome section.
