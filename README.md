@@ -35,9 +35,9 @@ Concretely, this means:
   its own middleware shape (e.g. gin's `gin.HandlerFunc`) writes a small
   adapter in their own code; that adapter is intentionally not part of this
   module.
-- **Packages don't depend on each other.** `captcha`, `geoip`, `saml`, and
-  `passkey` are independent leaves. None imports another package in this
-  module. Pull in exactly the ones you need.
+- **Packages don't depend on each other.** `clientip`, `captcha`, `geoip`,
+  `saml`, and `passkey` are independent leaves. None imports another package
+  in this module. Pull in exactly the ones you need.
 
 ### Why there is no `identity` or `authflow` package
 
@@ -74,7 +74,10 @@ authentication flows.
 
 Every package here answers one question: *does it protect an authentication
 flow?* `saml` and `passkey` are the flows. `captcha` keeps login and
-registration from being abused. `geoip` answers where a login came from.
+registration from being abused. `clientip` establishes which address a login
+actually came from, which is what anything keyed on that address — a limiter, a
+lockout, an audit entry — silently depends on. `geoip` answers where a login
+came from.
 
 Passing that test is necessary, not sufficient. `audit` passed it and was
 removed anyway, because two real consumers measured it and it saved nobody any
@@ -99,6 +102,7 @@ split later.
 | Package | Purpose | Built on |
 |---|---|---|
 | [`captcha`](./captcha) | Self-hosted image captcha: issue a challenge, verify a single-use answer | [`mojocn/base64Captcha`](https://github.com/mojocn/base64Captcha) |
+| [`clientip`](./clientip) | Resolve the address a request came from behind a reverse proxy, and report when a forwarded request arrives from a peer the deployment never declared | standard library only |
 | [`geoip`](./geoip) | Offline IP-to-location lookup against a local MaxMind-format (`.mmdb`) database, with optional hot-reload | [`oschwald/maxminddb-golang`](https://github.com/oschwald/maxminddb-golang) |
 | [`saml`](./saml) | SAML 2.0 Service Provider orchestration: AuthnRequest issuance, SP metadata, Response/Assertion validation with replay, multi-assertion, decompression-bomb and weak-signature defenses `crewjam/saml` leaves to the caller | [`crewjam/saml`](https://github.com/crewjam/saml) |
 | [`passkey`](./passkey) | WebAuthn ceremony orchestration: registration, allow-listed login, and discoverable (usernameless) login, keyed by an opaque user handle | [`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) |
@@ -109,6 +113,7 @@ table above is just a map to find the right one.
 ## Installation
 
 ```sh
+go get github.com/KazuhaHub/authcore/clientip
 go get github.com/KazuhaHub/authcore/captcha
 go get github.com/KazuhaHub/authcore/geoip
 go get github.com/KazuhaHub/authcore/saml
