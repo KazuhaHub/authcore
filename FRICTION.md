@@ -1360,3 +1360,60 @@ verdict's precondition is met.
 
 The remaining follow-up is on `authcore`, not on RP: adding `Config.ForceAuthn` so that
 `saml_crewjam.go` can go away. Until then, that file is the honest cost of the gap.
+
+---
+
+## ratelimit — the keep-or-drop measurement
+
+`ratelimit` is the only package in this module that was never migrated into anything, so there is no
+consumer friction to report. What replaces it is the measurement that decided its removal, and it is
+the shortest one in this file: **zero consumers, and the design was never checked against a single
+consumer's code.**
+
+```
+$ grep -rn "authcore/ratelimit" --include='*.go' <every repository in the organisation>
+(no matches)
+```
+
+Nothing outside the library imports it, and nothing inside it does either. That alone decides
+nothing — `geoip` was also unconsumed at first. What decides it is the argument that kept it alive,
+and what happened to that argument.
+
+### The argument, and how it was spent
+
+A read-only preflight concluded MIGRATE on exactly one ground: AlertHub had a live
+`X-Forwarded-For` defect. `clientIP()` read `r.RemoteAddr` only, so behind the reverse proxy that
+`SECURITY.md` tells operators to run, "10 attempts per minute per IP" across the five credential
+endpoints collapsed into "10 per minute in total". That is not a weakened defence but an inverted
+one: one attacker's spending locked every other user out. A shared library would have fixed it.
+
+AlertHub fixed it directly instead, in `#18`, with its own `TrustedProxies` type. Nothing migrated.
+The argument for the package is spent, and what it leaves behind is sharper than what it replaced —
+four implementations of the same security-critical logic, diverging on adversarial input:
+
+| Implementation | Notices a misconfigured proxy? |
+|---|---|
+| Report-Portal `internal/app/audit.go` (`proxySeen`) | yes |
+| Passwall-Sub-Panel (gin `SetTrustedProxies`) | no |
+| AlertHub `server/internal/api/trustedproxy.go`, from `#18` | no |
+| `authcore/ratelimit` | nothing consumes it |
+
+The bug was in the client-IP resolution, never in the limiter, and the silence around it is what let
+it sit. `ratelimit` bundles the half worth sharing with the half nobody needed.
+
+### Verdict: remove, and extract `clientip` instead
+
+See [ADR 3](docs/adr/0003-ratelimit-and-clientip.md). Deleted: 462 lines across code and tests, plus
+`go-chi/chi/v5` and `go-chi/httprate` as direct dependencies and `klauspost/cpuid/v2` and
+`zeebo/xxh3` as indirect ones — dependencies that existed only to serve it.
+
+The exit criteria are in the ADR, written before the replacement code exists: if the migrated
+consumer still cannot bucket by real client IP behind a proxy, delete `clientip`; and if only one
+service adopts it, it is private code in the wrong repository.
+
+### What this does not say
+
+`ratelimit` was not wrong and its implementation was not bad — the limiter it wraps is
+`go-chi/httprate`, which is fine. It is a package whose *boundary* was drawn in the wrong place.
+That is a different failure from `audit`'s, which could not carry the data it needed to carry. Both
+ended in removal, and the two reasons should not be conflated when the next package is proposed.

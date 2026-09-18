@@ -23,12 +23,11 @@ Concretely, this means:
 - **No domain types.** You will not find a `User`, `Account`, `Tenant`,
   `Org`, or `Role` type in this module, and none should ever be added.
 - **Callers identify themselves opaquely.** Where a package needs to tell
-  "who" apart — a rate-limit bucket, a captcha challenge id — it accepts a
+  "who" apart — a captcha challenge id, a client address — it accepts a
   caller-supplied opaque `string` or a narrow interface the caller
-  implements, and never interprets what that string means. `ratelimit`'s
-  `KeyFunc`, for example, returns a plain string; whether that string
-  represents a client IP, an API token, or a hash of a tenant ID is entirely
-  the caller's business.
+  implements, and never interprets what that string means. Whether such a
+  string represents a client IP, an API token, or a hash of a tenant ID is
+  entirely the caller's business.
 - **No web-framework coupling.** Public signatures use only `net/http`
   types (`http.Handler`, `*http.Request`, ...). None of gin, echo, or any
   other framework's types appear in this module's API, so any of these
@@ -36,8 +35,8 @@ Concretely, this means:
   its own middleware shape (e.g. gin's `gin.HandlerFunc`) writes a small
   adapter in their own code; that adapter is intentionally not part of this
   module.
-- **Packages don't depend on each other.** `captcha`, `geoip`, and
-  `ratelimit` are independent leaves. None imports another package in this
+- **Packages don't depend on each other.** `captcha`, `geoip`, `saml`, and
+  `passkey` are independent leaves. None imports another package in this
   module. Pull in exactly the ones you need.
 
 ### Why there is no `identity` or `authflow` package
@@ -53,7 +52,7 @@ each application (or in a separate, explicitly opinionated module upstream of
 it), built on top of these mechanism packages — not inside `authcore`.
 
 This holds even for `saml` and `passkey`, which sit closer to
-"identity" than `ratelimit`/`captcha`/`geoip` do but keep to the same rule.
+"identity" than `captcha`/`geoip` do but keep to the same rule.
 Each is an **orchestration layer over a protocol library**
 (`crewjam/saml`, `go-webauthn/webauthn`) — never an account model:
 
@@ -74,12 +73,15 @@ authcore is identity protocol orchestration, plus the controls that protect
 authentication flows.
 
 Every package here answers one question: *does it protect an authentication
-flow?* `saml` and `passkey` are the flows. `captcha` and `ratelimit` keep login
-and registration from being abused. `geoip` answers where a login came from.
+flow?* `saml` and `passkey` are the flows. `captcha` keeps login and
+registration from being abused. `geoip` answers where a login came from.
 
 Passing that test is necessary, not sufficient. `audit` passed it and was
 removed anyway, because two real consumers measured it and it saved nobody any
-code — see [ADR 2](docs/adr/0002-audit-is-not-shareable.md).
+code — see [ADR 2](docs/adr/0002-audit-is-not-shareable.md). `ratelimit`
+passed it too and was removed for a different reason: nothing ever consumed it,
+and the half of it worth sharing turned out to be client-IP resolution rather
+than the limiter — see [ADR 3](docs/adr/0003-ratelimit-and-clientip.md).
 
 A package that cannot answer that question belongs somewhere else, however
 security-adjacent it looks. The name is deliberately narrow: a library with one
@@ -96,7 +98,6 @@ split later.
 
 | Package | Purpose | Built on |
 |---|---|---|
-| [`ratelimit`](./ratelimit) | `net/http` rate-limiting middleware, keyed by an opaque string (default: trusted-proxy-aware client IP) | [`go-chi/httprate`](https://github.com/go-chi/httprate), [`go-chi/chi/v5/middleware`](https://github.com/go-chi/chi) |
 | [`captcha`](./captcha) | Self-hosted image captcha: issue a challenge, verify a single-use answer | [`mojocn/base64Captcha`](https://github.com/mojocn/base64Captcha) |
 | [`geoip`](./geoip) | Offline IP-to-location lookup against a local MaxMind-format (`.mmdb`) database, with optional hot-reload | [`oschwald/maxminddb-golang`](https://github.com/oschwald/maxminddb-golang) |
 | [`saml`](./saml) | SAML 2.0 Service Provider orchestration: AuthnRequest issuance, SP metadata, Response/Assertion validation with replay, multi-assertion, decompression-bomb and weak-signature defenses `crewjam/saml` leaves to the caller | [`crewjam/saml`](https://github.com/crewjam/saml) |
@@ -108,7 +109,6 @@ table above is just a map to find the right one.
 ## Installation
 
 ```sh
-go get github.com/KazuhaHub/authcore/ratelimit
 go get github.com/KazuhaHub/authcore/captcha
 go get github.com/KazuhaHub/authcore/geoip
 go get github.com/KazuhaHub/authcore/saml
@@ -130,37 +130,6 @@ move together on the same module version.
   changed — because all three currently ship from one `go.mod`.
 
 ## Quickstart
-
-### `ratelimit`
-
-```go
-package main
-
-import (
-	"net/http"
-	"time"
-
-	"github.com/KazuhaHub/authcore/ratelimit"
-)
-
-func main() {
-	limiter := ratelimit.New(ratelimit.Config{
-		Limit:  100,
-		Window: time.Minute,
-		// No proxy in front of this server: the zero-value TrustedProxies
-		// reads RemoteAddr only and ignores any X-Forwarded-For header.
-		// Behind a reverse proxy, declare the trust boundary explicitly:
-		// TrustedProxies: ratelimit.TrustedProxies{Hops: 1},
-	})
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
-
-	http.ListenAndServe(":8080", limiter.Middleware(mux))
-}
-```
 
 ### `captcha`
 
