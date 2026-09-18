@@ -1,7 +1,7 @@
 # 3. Extract clientip, remove ratelimit
 
 Date: 2026-09-17
-Status: **proposed** — not decided. The repository owner has not ruled on this.
+Status: **accepted** (2026-09-17). The repository owner ruled on this the same day.
 Supersedes: the `ratelimit` package, if accepted
 
 ## Context
@@ -51,7 +51,7 @@ AlertHub's defect, and precisely the thing Report-Portal's `proxySeen` would
 have surfaced on day one. The bug was never in the limiter; it was in the
 client-IP resolution, and in the silence around it.
 
-## Decision (proposed)
+## Decision
 
 Remove `ratelimit` from authcore, and extract `authcore/clientip` in its place.
 
@@ -94,7 +94,7 @@ converging on "trust loopback, say so, and refuse everything else" from opposite
 directions is the strongest evidence in this document that the *policy* is
 settled and only the *mechanism* is duplicated.
 
-## Consequences if accepted
+## Consequences
 
 - `authcore/ratelimit` is deleted; `git log` keeps it recoverable.
 - `FRICTION.md` gains an entry recording the measurement, as it did for `audit`.
