@@ -63,13 +63,20 @@
 // case).
 //
 // This package surfaces CloneWarning on the LoginResult it returns and does
-// not act on it — go-webauthn's own storage guidance is that the advanced
-// counter (and flags) must be written back on every cryptographically
-// successful login regardless, so CredentialStore.UpdateSignCount always
-// runs before FinishLogin / FinishDiscoverableLogin returns. What
-// CloneWarning being set should MEAN for that login — refuse it outright,
-// accept it but raise an alert, or something else — is a decision this
-// package leaves entirely to the caller.
+// not act on it. What it being set should MEAN for that login — refuse it
+// outright, accept it but raise an alert, or something else — is a decision
+// this package leaves entirely to the caller, and there are exactly two
+// places to make it:
+//
+//   - Inside CredentialStore.UpdateSignCount, which always runs before
+//     FinishLogin / FinishDiscoverableLogin returns. Refusing there returns
+//     a nil *LoginResult and the Store's error, so the login fails — and
+//     because the refusal happens before the write, the stored record is
+//     untouched. This is the way to reject a flagged login.
+//   - On the returned LoginResult, after the fact. The login can still be
+//     rejected, but the advanced counter and flags have already been
+//     written back; go-webauthn's storage guidance is that they must be,
+//     on every cryptographically successful login.
 //
 // # User verification: "preferred" is not enforced
 //

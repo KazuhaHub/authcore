@@ -1,8 +1,12 @@
 # authcore
 
-> **Status: pre-v1.** This module has no tagged release yet. Package APIs may
-> still change without notice between commits; pin to a specific commit SHA
-> (not a branch) if you depend on it before v1.0.0 is tagged.
+> **Status: pre-v1, tagged.** Releases are tagged (`v0.1.0`, `v0.2.0`, `v0.3.0`,
+> and later ones as they come), but there is still no compatibility promise:
+> a package API may change in any release. Pin a tag — and pin the tag you have
+> actually verified — rather than tracking `main`:
+> `go get github.com/KazuhaHub/authcore/<pkg>@v0.3.0`. Pinning a commit SHA is
+> for experimentation; it means auditing against a commit no release note
+> describes.
 
 `authcore` is a small set of independent, infrastructure-level Go packages
 extracted from three separate services that had each reimplemented the same
@@ -121,9 +125,10 @@ move together on the same module version.
 
 ### Versioning policy
 
-- **Before v1.0.0** (current state): no compatibility promise. Pin a commit
-  SHA via `go get github.com/KazuhaHub/authcore/<pkg>@<sha>` for anything
-  beyond experimentation.
+- **Before v1.0.0** (current state): no compatibility promise, and each tag is
+  a fresh opportunity to change one. Pin the tag you have verified:
+  `go get github.com/KazuhaHub/authcore/<pkg>@v0.3.0`. A commit SHA also works,
+  but then nothing describes what you are depending on.
 - **From v1.0.0 on**: standard [Go module semantic versioning](https://go.dev/doc/modules/version-numbers).
   A breaking change to any package's public API bumps the module's major
   version (`v2`, `v3`, ...) per Go's module rules, even if only one package
@@ -354,7 +359,10 @@ func main() {
 		}
 		if result.Credential.Authenticator.CloneWarning {
 			// Decide what a possible cloned credential means for your own
-			// account model — this package only surfaces the signal.
+			// account model — this package only surfaces the signal. Note the
+			// counter has already been written back by this point; to reject a
+			// flagged login WITHOUT writing it, refuse inside your
+			// CredentialStore.UpdateSignCount instead.
 		}
 		fmt.Fprintf(w, "signed in as handle %q", result.UserHandle)
 	})

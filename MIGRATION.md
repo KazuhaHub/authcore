@@ -320,23 +320,30 @@ func (s *Service) finalizeAssertion(ctx context.Context, stored *domain.PasskeyC
 }
 ```
 
-**After:**
+That code refuses a flagged login *before* writing anything, and
+`passkey.Service` does not do that on its own: it never rejects a login on
+`CloneWarning`, and it calls `CredentialStore.UpdateSignCount` before either
+Finish method returns. The equivalent is to refuse from inside the Store,
+which is the only place a refusal can also prevent the write:
+
+**After** — your `UpdateSignCount`:
 ```go
-result, err := svc.FinishLogin(ctx, handle, sessionID, r) // or FinishDiscoverableLogin
-if err != nil {
-	return err
-}
-if result.Credential.Authenticator.CloneWarning {
-	return fmt.Errorf("%w: authenticator state regression (possible clone or replay)", domain.ErrUnauthorized)
+func (s *store) UpdateSignCount(ctx context.Context, credentialID []byte, cred webauthn.Credential, usedAt time.Time) error {
+	if cred.Authenticator.CloneWarning {
+		// Refusing here fails the ceremony with a nil *LoginResult, and the
+		// record is untouched because nothing has been written yet.
+		return fmt.Errorf("%w: authenticator state regression (possible clone or replay)", ErrRegression)
+	}
+	// ... persist the advanced sign count
+	return nil
 }
 ```
 
-`passkey.Service` **never** rejects a login on `CloneWarning` on its own —
-it still writes the advanced sign count back via `CredentialStore.UpdateSignCount`
-(same as PSP's gated `UpdateAfterLogin`, and that write is unconditional,
-matching PSP's own comment that a lost update-gate race is benign, not a
-clone) — but whether `CloneWarning` should fail the login is now your
-explicit check, one `if` block, right where you already handle the result.
+If your policy is instead "accept it, but raise an alert", inspect
+`result.Credential.Authenticator.CloneWarning` on the returned `*LoginResult`.
+That works too, but by then the advanced counter and flags have already been
+written back — so a policy that must not write cannot be expressed that way.
+See the `CredentialStore.UpdateSignCount` doc comment for the full contract.
 
 PSP's own passwordless-vs-2FA `UserVerification` split
 (`Config.UserVerification`, forced to `protocol.VerificationRequired` for
