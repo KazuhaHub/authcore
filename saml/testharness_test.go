@@ -70,6 +70,9 @@ type testIdP struct {
 	nameIDFmt  string
 	userEmail  string
 	groups     []string
+	// customAttributes are emitted verbatim, which is how a case controls the
+	// exact Name/FriendlyName pairs an assertion carries.
+	customAttributes []crewjamsaml.Attribute
 }
 
 func newTestIdP(t *testing.T, spEntityID, spACSURL string, spCert *x509.Certificate) *testIdP {
@@ -154,14 +157,15 @@ func (tp *testIdP) GetServiceProvider(_ *http.Request, serviceProviderID string)
 // same canned session; there is no login form in these tests.
 func (tp *testIdP) GetSession(_ http.ResponseWriter, _ *http.Request, _ *crewjamsaml.IdpAuthnRequest) *crewjamsaml.Session {
 	return &crewjamsaml.Session{
-		ID:           "session-001",
-		CreateTime:   time.Now(),
-		ExpireTime:   time.Now().Add(time.Hour),
-		Index:        "session-index-001",
-		NameID:       tp.nameID,
-		NameIDFormat: tp.nameIDFmt,
-		UserEmail:    tp.userEmail,
-		Groups:       tp.groups,
+		ID:               "session-001",
+		CreateTime:       time.Now(),
+		ExpireTime:       time.Now().Add(time.Hour),
+		Index:            "session-index-001",
+		NameID:           tp.nameID,
+		NameIDFormat:     tp.nameIDFmt,
+		UserEmail:        tp.userEmail,
+		Groups:           tp.groups,
+		CustomAttributes: tp.customAttributes,
 	}
 }
 

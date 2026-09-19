@@ -62,6 +62,23 @@ type Assertion struct {
 	// policy on the SAME name appearing on more than one <Attribute>
 	// element.
 	Attributes map[string][]string
+
+	// AttributesByName holds the same values indexed by the attribute's
+	// Name ALONE, never by its FriendlyName.
+	//
+	// It exists because Attributes cannot answer "what did the IdP put in
+	// the attribute whose Name is X". An <Attribute>'s Name and
+	// FriendlyName are frequently different strings pointing at the same
+	// claim, and a second <Attribute> may legitimately be Named the first
+	// one's FriendlyName — at which point the merged map holds both
+	// attributes' values under one key with no way to tell which value came
+	// from which. A caller mapping claims onto its own fields needs the
+	// source, so it reads this map instead.
+	//
+	// Same rules for values as Attributes: per-Name order preserved,
+	// repeated Names merged in encounter order, empty values kept, and an
+	// attribute with no Name at all indexed nowhere.
+	AttributesByName map[string][]string
 }
 
 // Attribute returns the first value for the named attribute (matched
@@ -100,9 +117,10 @@ func dedupeKeys(keys ...string) []string {
 // function only reshapes data, it does not itself validate trust.
 func assertionFromCrewjam(a *crewjamsaml.Assertion, strictAttributes bool) (*Assertion, error) {
 	out := &Assertion{
-		ID:           a.ID,
-		IssueInstant: a.IssueInstant,
-		Attributes:   map[string][]string{},
+		ID:               a.ID,
+		IssueInstant:     a.IssueInstant,
+		Attributes:       map[string][]string{},
+		AttributesByName: map[string][]string{},
 	}
 	out.Issuer = a.Issuer.Value
 	if a.Subject != nil && a.Subject.NameID != nil {
@@ -127,6 +145,14 @@ func assertionFromCrewjam(a *crewjamsaml.Assertion, strictAttributes bool) (*Ass
 			for _, v := range attr.Values {
 				vals = append(vals, v.Value)
 			}
+			// Indexed under the raw Name only. An empty Name has no name to
+			// index under: skipping it is not a value being dropped, since the
+			// same values are still reachable through the merged map when the
+			// attribute carried a FriendlyName.
+			if attr.Name != "" {
+				out.AttributesByName[attr.Name] = append(out.AttributesByName[attr.Name], vals...)
+			}
+
 			keys := dedupeKeys(attr.Name, attr.FriendlyName)
 			for _, key := range keys {
 				if strictAttributes {
@@ -135,6 +161,8 @@ func assertionFromCrewjam(a *crewjamsaml.Assertion, strictAttributes bool) (*Ass
 					}
 					seen[key] = true
 				}
+				// append copies: the two maps must not share a backing array, or
+				// a caller appending to one would silently rewrite the other.
 				out.Attributes[key] = append(out.Attributes[key], vals...)
 			}
 		}
