@@ -74,13 +74,28 @@ type CredentialStore interface {
 	// cred rather than persist it verbatim. usedAt is the ceremony's finish
 	// time, for a last-used timestamp.
 	//
-	// This is called after every cryptographically successful login,
-	// including one where cred.Authenticator.CloneWarning is set —
-	// go-webauthn does not treat that as a verification failure (see the
-	// package doc), and the storage write-back is unconditional. Deciding
-	// what a clone warning MEANS for this login — reject it, allow it with
-	// an alert, or something else — is the caller's policy, applied to the
-	// FinishLogin / FinishDiscoverableLogin result, not this method.
+	// # The write-back contract
+	//
+	// Both FinishLogin and FinishDiscoverableLogin call this once after the
+	// assertion verifies, INCLUDING when cred.Authenticator.CloneWarning is
+	// set — this package does not treat a counter rollback as a verification
+	// failure. Being called is not the same as being obliged to write: an
+	// implementation may apply its own policy and REFUSE BEFORE WRITING,
+	// returning a classifiable error. What it must not do is return nil
+	// while claiming a write it did not perform.
+	//
+	// A non-nil error fails the ceremony: both Finish methods return a nil
+	// *LoginResult and that error, wrapped so errors.Is / errors.As still
+	// reach it. This package never logs a write-back error and carries on —
+	// an application that rejects a credential on a clone warning needs the
+	// rejection to BE the outcome of the login, not a note attached to a
+	// successful one. The ceremony's challenge is already consumed by then,
+	// so a refused login has to be begun again.
+	//
+	// Refusing before writing is also the only way to get the stronger
+	// property. This package does not attempt to undo a write an
+	// implementation has already made: a Store that persists first and
+	// decides afterwards has already changed the record.
 	UpdateSignCount(ctx context.Context, credentialID []byte, cred webauthn.Credential, usedAt time.Time) error
 }
 

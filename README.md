@@ -354,7 +354,10 @@ func main() {
 		}
 		if result.Credential.Authenticator.CloneWarning {
 			// Decide what a possible cloned credential means for your own
-			// account model — this package only surfaces the signal.
+			// account model — this package only surfaces the signal. Note the
+			// counter has already been written back by this point; to reject a
+			// flagged login WITHOUT writing it, refuse inside your
+			// CredentialStore.UpdateSignCount instead.
 		}
 		fmt.Fprintf(w, "signed in as handle %q", result.UserHandle)
 	})

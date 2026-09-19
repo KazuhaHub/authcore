@@ -19,19 +19,21 @@ type LoginResult struct {
 	UserHandle []byte
 
 	// Credential is the credential record as it stands after this login.
-	// SignCount and Flags reflect this assertion, and this package has
-	// already written the record back via CredentialStore.UpdateSignCount
-	// by the time this is returned.
+	// SignCount and Flags reflect this assertion, and the record was written
+	// back via CredentialStore.UpdateSignCount before this value was
+	// returned. A login that reaches here was accepted by that write-back;
+	// a Store that refused it produces a nil *LoginResult instead (see that
+	// method for the contract).
 	//
 	// Credential.Authenticator.CloneWarning is the counter-rollback signal:
 	// it is set when the authenticator's reported counter did not advance
 	// past the value already on file (and the two are not both simply
 	// zero — an authenticator that never implements a counter legitimately
 	// reports 0 every time, and that alone is never flagged). This package
-	// does not act on it: accepting the login regardless, rejecting it, or
-	// logging an alert and continuing is a policy decision left entirely to
-	// the caller, made by inspecting this field after a successful call —
-	// see the package doc.
+	// does not act on it. A caller can still reject the login after
+	// inspecting this field, but the write has happened by then; to reject a
+	// flagged login WITHOUT writing it, refuse inside UpdateSignCount, which
+	// fails the ceremony — see the package doc.
 	Credential webauthn.Credential
 }
 
