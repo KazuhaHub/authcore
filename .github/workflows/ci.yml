@@ -5,11 +5,21 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel a stale run when new commits land on the same branch/PR, but let
-# separate branches/PRs run concurrently.
+# A new push to a pull request makes the run in flight stale, so that run is
+# cancelled; separate PRs still run side by side.
+#
+# A main push is never stale. The group used to be keyed on the ref for both
+# events, so two merges seconds apart shared one group and the second cancelled
+# the first: run 23 (d520343, one of a pair of Dependabot merges) was killed six
+# seconds in, and that commit has no CI result. Tags are cut by hand from main
+# and consumers pin them, so every main commit needs a verdict of its own. A
+# main push therefore gets its own group, `github.run_id`, and cancels nothing.
+# The cost is one extra run when merges arrive together: typically about 35 s of
+# wall time (slow runs have taken 85 s and 2.5 min), and roughly double that in
+# runner time because the two jobs run in parallel.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Default to no permissions; each job opts in to only what it needs.
 permissions: {}
