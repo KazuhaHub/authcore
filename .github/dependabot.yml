@@ -13,6 +13,31 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "deps"
+    # INDIRECT REQUIREMENTS INCLUDED. Version updates default to direct
+    # dependencies, and a `// indirect` line in go.mod is not one: Dependabot's
+    # gomod parser gives it no manifest requirement, and its updater then skips
+    # it unless `allow` says otherwise. etree, golang-jwt and x/crypto are all
+    # indirect here, so without this they only ever moved when an advisory
+    # named them, and GHSA-qhrp-hfff-vphr showed that is not enough: its fix
+    # was in etree, not goxmldsig, and the advisory reached neither the Go
+    # vulnerability database nor GitHub's (see Passwall-Sub-Panel's
+    # dependabot.yml).
+    #
+    # `all` rather than those names, because passkey has the same exposure:
+    # go-webauthn decodes attestation objects and COSE keys with
+    # fxamacker/cbor and TPM attestations with go-tpm, both indirect here.
+    # Indirect requirements outside the own-PR list share the weekly
+    # minor-and-patch group.
+    #
+    # CHECK THE GO LINE BEFORE MERGING. `go get` raises go.mod's go line to
+    # whatever the new version requires, and every consumer's go line then has
+    # to follow (the Report Portal is on go 1.26.6). The golang.org/x modules
+    # are the likeliest cause: x/crypto and x/sys require go 1.26.0 today,
+    # authcore's own line, and move to the previous Go release soon after each
+    # new one, so to 1.27.0 once Go 1.28 ships. CI stays green through it,
+    # because setup-go reads the raised line and tests with that.
+    allow:
+      - dependency-type: all
     groups:
       # Non-security libraries can land together to keep PR noise down.
       minor-and-patch:
@@ -21,11 +46,18 @@ updates:
           - patch
         exclude-patterns:
           - "github.com/crewjam/saml"
+          - "github.com/russellhaering/goxmldsig"
+          - "github.com/beevik/etree"
+          - "github.com/mattermost/xml-roundtrip-validator"
           - "github.com/go-webauthn/*"
           - "github.com/coreos/go-oidc/*"
-          - "github.com/russellhaering/goxmldsig"
-    # Identity and signature libraries get their own PR each, so that a version
-    # bump is always reviewed on its own and never buried in a batch.
+          - "github.com/golang-jwt/jwt/*"
+          - "golang.org/x/crypto"
+    # Identity, XML signature and crypto libraries get their own PR each, so a
+    # bump is always reviewed on its own and never buried in a batch. That
+    # includes the indirect ones crewjam/saml parses and verifies with: etree
+    # builds the tree goxmldsig checks, and xml-roundtrip-validator is the
+    # first thing crewjam runs on a raw Response.
 
   - package-ecosystem: github-actions
     directory: /

@@ -387,12 +387,20 @@ concern, not housekeeping.
 
 - **Security-sensitive libraries are pinned to the latest release** and are
   updated in their own pull request, never batched with unrelated bumps. This
-  currently covers:
+  currently covers (at the versions go.mod pins):
   - `github.com/crewjam/saml` **v0.5.1** — SAML orchestration (`saml`)
-  - `github.com/russellhaering/goxmldsig` **v1.4.0** — XML digital signature
+  - `github.com/russellhaering/goxmldsig` **v1.6.1** — XML digital signature
     verification, a `crewjam/saml` dependency (`saml`)
+  - `github.com/beevik/etree` **v1.7.0** — the XML tree `goxmldsig` verifies
+    and `crewjam/saml` reads assertions from (`saml`)
+  - `github.com/mattermost/xml-roundtrip-validator` **v0.1.0** — the first
+    check `crewjam/saml` runs on a raw Response (`saml`)
+  - `golang.org/x/crypto` **v0.57.0** — a `crewjam/saml` dependency, through
+    its XML decryption (`saml`)
   - `github.com/go-webauthn/webauthn` **v0.18.1** — WebAuthn ceremony
     library (`passkey`)
+  - `github.com/golang-jwt/jwt/v5` **v5.3.1** — a `go-webauthn` dependency,
+    through its SafetyNet attestation check (`passkey`)
   - `github.com/coreos/go-oidc/v3` — reserved for the forthcoming `oidc`
     package; not yet a dependency of this module.
 
@@ -401,8 +409,12 @@ concern, not housekeeping.
   to exercise genuine WebAuthn ceremonies in tests) — it never ships in a
   binary that imports this module.
 - **Dependabot runs weekly** for both Go modules and GitHub Actions; see
-  `.github/dependabot.yml`. Minor and patch bumps of non-identity libraries are
-  grouped to keep review noise down.
+  `.github/dependabot.yml`. It proposes indirect requirements too, because the
+  XML and crypto libraries `crewjam/saml` builds on (`beevik/etree`,
+  `golang.org/x/crypto`) are indirect here and a fix can live in them alone.
+  Minor and patch bumps of non-identity libraries are grouped to keep review
+  noise down; identity, XML signature and crypto libraries each get their own
+  pull request.
 - **GitHub Actions are pinned to a commit SHA** with the tag in a trailing
   comment, so a moved tag cannot change what CI executes.
 - `govulncheck` runs on every push and pull request.
