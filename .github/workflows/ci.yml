@@ -56,6 +56,14 @@ jobs:
             exit 1
           fi
 
+      # The tests passing says nothing about whether this file is valid.
+      # actionlint checks expressions, job wiring and action inputs, and runs
+      # the shellcheck the runner image ships over every run: script. Same
+      # version as Passwall-Node and the Report Portal. It compiles cold, about
+      # 10 s, until go.sum changes and setup-go saves a cache that holds it.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
       - name: go test -race
         run: go test ./... -race -count=1
 
