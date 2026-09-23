@@ -77,8 +77,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The action installs its own Go, and its go-version-input (default
+      # "stable") always wins over go-version-file: setup-go warned that only
+      # go-version would be used on every run, and scanned with 1.27.1, not
+      # go.mod's 1.26.0. Stable is the right choice for a library anyway. Which
+      # standard library ships is each consumer's call, and their own
+      # govulncheck runs judge that one; this scan is for authcore's code and
+      # the modules it requires. weekly.yml runs the same scan on a timer.
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          go-version-file: go.mod
+          go-version-input: stable
           repo-checkout: false

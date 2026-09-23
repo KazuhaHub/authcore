@@ -417,7 +417,9 @@ concern, not housekeeping.
   pull request.
 - **GitHub Actions are pinned to a commit SHA** with the tag in a trailing
   comment, so a moved tag cannot change what CI executes.
-- `govulncheck` runs on every push and pull request.
+- `govulncheck` runs on every push and pull request, and every Monday on
+  `main` (`.github/workflows/weekly.yml`), so an advisory published during a
+  week with no commits is still reported that week.
 
 ### Known follow-up
 

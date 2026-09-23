@@ -1,0 +1,41 @@
+name: Weekly
+
+# Checks whose answer can change while the code does not, so they run on a
+# timer as well as on commits. authcore goes days without a commit (no CI run
+# between 2026-09-19 and 2026-09-23), and it pins the SAML and WebAuthn stack
+# for every consumer: an advisory against crewjam/saml, goxmldsig, etree or
+# go-webauthn published in a quiet week would otherwise wait for the next
+# unrelated commit to be reported.
+#
+# Nothing here runs on pull requests; ci.yml is the gate there. A red run here
+# is not a broken build, it is the signal.
+#
+# GitHub disables a public repository's schedules after 60 days without
+# activity. Re-enable this one from the Actions tab when that happens.
+
+on:
+  schedule:
+    # Mondays 04:23 UTC. Off the hour on purpose: scheduled runs at :00 queue
+    # behind everyone else's and get delayed or dropped.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  govulncheck:
+    name: govulncheck (weekly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same scan as ci.yml's govulncheck job, including the Go version.
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: stable
+          repo-checkout: false
