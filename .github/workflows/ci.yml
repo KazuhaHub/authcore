@@ -67,6 +67,35 @@ jobs:
       - name: go test -race
         run: go test ./... -race -count=1
 
+      # THE FLOOR IS NOT WHAT CONSUMERS BUILD WITH. The steps above run go.mod's
+      # go line, 1.26.0 exactly, which proves that line honest. Passwall-Sub-
+      # Panel builds with its toolchain line, go1.27.1, and the Report Portal
+      # with go 1.26.6. saml and passkey lean on encoding/xml, crypto/x509 and
+      # crypto/rsa, whose behaviour moves between minors, and a break there
+      # would surface as a consumer's test failure, far from its cause. This
+      # tests the newest consumer toolchain as the other end; 1.26.6 sits
+      # between the two, and a patch release only backports fixes.
+      #
+      # Without -race: races are a property of the code, checked once above,
+      # and the race build costs a third more (40 s against 30 s, measured cold
+      # locally). Move the version when a consumer's toolchain line reaches a
+      # new minor; a patch bump needs nothing here.
+      #
+      # cache: false because this setup's key would be go-1.27.1 plus go.sum,
+      # the govulncheck job's key, and two jobs saving one key freeze whichever
+      # saves first. The 1.26.0 setup above saves the whole build directory,
+      # this step's objects included, whenever go.sum changes.
+      - name: Set up Go 1.27.1
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          cache: false
+
+      - name: go test (go1.27.1)
+        run: |
+          test "$(go env GOVERSION)" = go1.27.1
+          go test ./... -count=1
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
