@@ -39,3 +39,50 @@ jobs:
         with:
           go-version-input: stable
           repo-checkout: false
+
+  # saml's FuzzScanResponseShapeMatchesCrewjam checks that the one-assertion
+  # rule and crewjam agree on what counts as an assertion (see the test for
+  # why that is the security property). `go test` on every push runs only its
+  # seeds; this is the only place it explores. Two minutes found 123 new
+  # interesting inputs and no failure when the target was added.
+  #
+  # -fuzzminimizetime 5s because the seeds are 4-9 KB signed responses, and
+  # at the default 60 s the fuzzer spent most of its budget shrinking each new
+  # interesting input instead of fuzzing.
+  #
+  # Each week starts again from the three seeds. Carrying the generated
+  # corpus over in actions/cache would not be reliable: GitHub evicts an entry
+  # left unread for over seven days, and the next scheduled run reads it seven
+  # days later.
+  fuzz:
+    name: fuzz (weekly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Uncached: this key would be ci.yml build job's (go-1.26.0 plus go.sum),
+      # and a save from here would freeze fuzz-instrumented objects into it.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Fuzz the SAML response shape scan
+        run: go test ./saml -run '^$' -fuzz '^FuzzScanResponseShapeMatchesCrewjam$' -fuzztime 2m -fuzzminimizetime 5s
+
+      # go test writes a failing input under saml/testdata/fuzz/, which goes
+      # away with the runner. Print it, so it can be committed there as a
+      # regression seed.
+      - name: Print the failing input
+        if: failure()
+        run: |
+          if [ ! -d saml/testdata/fuzz ]; then
+            echo "go test wrote no fuzz input; the failure is earlier in the log."
+            exit 0
+          fi
+          find saml/testdata/fuzz -type f -exec sh -c 'echo "== $1"; cat "$1"' sh {} \;

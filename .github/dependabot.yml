@@ -16,10 +16,11 @@ updates:
     # INDIRECT REQUIREMENTS INCLUDED. Version updates default to direct
     # dependencies, and a `// indirect` line in go.mod is not one: Dependabot's
     # gomod parser gives it no manifest requirement, and its updater then skips
-    # it unless `allow` says otherwise. etree, golang-jwt and x/crypto are all
-    # indirect here, so without this they only ever moved when an advisory
-    # named them, and GHSA-qhrp-hfff-vphr showed that is not enough: its fix
-    # was in etree, not goxmldsig, and the advisory reached neither the Go
+    # it unless `allow` says otherwise. golang-jwt and x/crypto are indirect
+    # here (etree and xml-roundtrip-validator were too, until the saml fuzz
+    # test imported them), so without this they only ever moved when an
+    # advisory named them. GHSA-qhrp-hfff-vphr showed that is not enough: its
+    # fix was in etree, not goxmldsig, and the advisory reached neither the Go
     # vulnerability database nor GitHub's (see Passwall-Sub-Panel's
     # dependabot.yml).
     #
@@ -55,9 +56,10 @@ updates:
           - "golang.org/x/crypto"
     # Identity, XML signature and crypto libraries get their own PR each, so a
     # bump is always reviewed on its own and never buried in a batch. That
-    # includes the indirect ones crewjam/saml parses and verifies with: etree
-    # builds the tree goxmldsig checks, and xml-roundtrip-validator is the
-    # first thing crewjam runs on a raw Response.
+    # includes the libraries crewjam/saml parses and verifies with, which
+    # authcore imports only in a test: etree builds the tree goxmldsig checks,
+    # and xml-roundtrip-validator is the first thing crewjam runs on a raw
+    # Response.
 
   - package-ecosystem: github-actions
     directory: /

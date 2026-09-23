@@ -409,9 +409,9 @@ concern, not housekeeping.
   to exercise genuine WebAuthn ceremonies in tests) — it never ships in a
   binary that imports this module.
 - **Dependabot runs weekly** for both Go modules and GitHub Actions; see
-  `.github/dependabot.yml`. It proposes indirect requirements too, because the
-  XML and crypto libraries `crewjam/saml` builds on (`beevik/etree`,
-  `golang.org/x/crypto`) are indirect here and a fix can live in them alone.
+  `.github/dependabot.yml`. It proposes indirect requirements too:
+  `golang.org/x/crypto` and `golang-jwt` reach authcore only through
+  `crewjam/saml` and `go-webauthn`, and a fix can live in them alone.
   Minor and patch bumps of non-identity libraries are grouped to keep review
   noise down; identity, XML signature and crypto libraries each get their own
   pull request.

@@ -28,7 +28,7 @@ import (
 // (example.com/.org/.net) and no data here refers to a real IdP or SP.
 
 // testKeyPair returns a fresh RSA-2048 self-signed keypair for cn.
-func testKeyPair(t *testing.T, cn string) (*rsa.PrivateKey, *x509.Certificate) {
+func testKeyPair(t testing.TB, cn string) (*rsa.PrivateKey, *x509.Certificate) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -75,7 +75,7 @@ type testIdP struct {
 	customAttributes []crewjamsaml.Attribute
 }
 
-func newTestIdP(t *testing.T, spEntityID, spACSURL string, spCert *x509.Certificate) *testIdP {
+func newTestIdP(t testing.TB, spEntityID, spACSURL string, spCert *x509.Certificate) *testIdP {
 	t.Helper()
 	key, cert := testKeyPair(t, "idp.example.com")
 	idpEntityID := "https://idp.example.com/saml/metadata"
@@ -110,7 +110,7 @@ func newTestIdP(t *testing.T, spEntityID, spACSURL string, spCert *x509.Certific
 	return tp
 }
 
-func mustParseURL(t *testing.T, raw string) url.URL {
+func mustParseURL(t testing.TB, raw string) url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -176,7 +176,7 @@ func certToBase64(cert *x509.Certificate) string {
 // idpInitiatedResponse drives ServeIDPInitiated and returns the raw,
 // base64-decoded <Response> XML it produced — a genuinely signed document,
 // not a hand-built fixture.
-func (tp *testIdP) idpInitiatedResponse(t *testing.T) []byte {
+func (tp *testIdP) idpInitiatedResponse(t testing.TB) []byte {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "https://idp.example.com/saml/idp-initiated", nil)
 	rec := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func (tp *testIdP) ssoResponse(t *testing.T, authnRequestURL string) []byte {
 
 // extractSAMLResponse pulls the SAMLResponse hidden-input value out of
 // crewjam's default auto-submit HTML form and base64-decodes it.
-func extractSAMLResponse(t *testing.T, page string) []byte {
+func extractSAMLResponse(t testing.TB, page string) []byte {
 	t.Helper()
 	const marker = `name="SAMLResponse" value="`
 	i := strings.Index(page, marker)
@@ -241,7 +241,7 @@ type testSPMaterial struct {
 	cert     *x509.Certificate
 }
 
-func newTestSPMaterial(t *testing.T, name string) testSPMaterial {
+func newTestSPMaterial(t testing.TB, name string) testSPMaterial {
 	t.Helper()
 	key, cert := testKeyPair(t, name+".example.org")
 	return testSPMaterial{
