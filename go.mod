@@ -3,7 +3,7 @@ module github.com/KazuhaHub/authcore
 go 1.26.0
 
 require (
-	github.com/beevik/etree v1.7.0
+	github.com/beevik/etree v1.8.0
 	github.com/crewjam/saml v0.5.1
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-webauthn/webauthn v0.18.2
