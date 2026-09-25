@@ -3,9 +3,11 @@ module github.com/KazuhaHub/authcore
 go 1.26.0
 
 require (
+	github.com/beevik/etree v1.7.0
 	github.com/crewjam/saml v0.5.1
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-webauthn/webauthn v0.18.1
+	github.com/mattermost/xml-roundtrip-validator v0.1.0
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/mojocn/base64Captcha v1.3.8
 	github.com/oschwald/maxminddb-golang v1.13.1
@@ -13,7 +15,6 @@ require (
 )
 
 require (
-	github.com/beevik/etree v1.7.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.3.1 // indirect
@@ -22,7 +23,6 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
-	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
 	github.com/oschwald/maxminddb-golang/v2 v2.1.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect

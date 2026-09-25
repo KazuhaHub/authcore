@@ -96,15 +96,9 @@ func TestValidateResponseXML_StrictAttributesEndToEnd(t *testing.T) {
 	}
 }
 
-// TestValidateResponseXML_EncryptedAssertionRejectedByDefault confirms
-// that a Response whose only assertion is an EncryptedAssertion is
-// refused unless AllowEncryptedAssertions is set — exercised through the
-// structural scanner directly (scanResponseShape), since building a real
-// encrypted assertion end-to-end belongs to crewjam's own test suite and
-// this package's own contribution is the refusal policy layered on top of
-// crewjam's ability to decrypt one.
-func TestValidateResponseXML_EncryptedAssertionRejectedByDefault(t *testing.T) {
-	const doc = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="r1" Version="2.0" IssueInstant="2026-01-01T00:00:00Z" Destination="https://sp.example.org/acs">
+// encryptedOnlyResponse is a Response whose only assertion is an
+// EncryptedAssertion. It is never decrypted, so the ciphertext is a stand-in.
+const encryptedOnlyResponse = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="r1" Version="2.0" IssueInstant="2026-01-01T00:00:00Z" Destination="https://sp.example.org/acs">
   <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
   <saml:EncryptedAssertion>
     <xenc:EncryptedData xmlns:xenc="http://www.w3.org/2001/04/xmlenc#" Type="http://www.w3.org/2001/04/xmlenc#Element">
@@ -113,7 +107,15 @@ func TestValidateResponseXML_EncryptedAssertionRejectedByDefault(t *testing.T) {
   </saml:EncryptedAssertion>
 </samlp:Response>`
 
-	shape, err := scanResponseShape([]byte(doc))
+// TestValidateResponseXML_EncryptedAssertionRejectedByDefault confirms
+// that a Response whose only assertion is an EncryptedAssertion is
+// refused unless AllowEncryptedAssertions is set — exercised through the
+// structural scanner directly (scanResponseShape), since building a real
+// encrypted assertion end-to-end belongs to crewjam's own test suite and
+// this package's own contribution is the refusal policy layered on top of
+// crewjam's ability to decrypt one.
+func TestValidateResponseXML_EncryptedAssertionRejectedByDefault(t *testing.T) {
+	shape, err := scanResponseShape([]byte(encryptedOnlyResponse))
 	if err != nil {
 		t.Fatalf("scanResponseShape: %v", err)
 	}
@@ -132,7 +134,7 @@ func TestValidateResponseXML_EncryptedAssertionRejectedByDefault(t *testing.T) {
 	p := newTestProvider(t, sp, idpMeta, func(c *Config) {
 		c.ACSURL = "https://sp.example.org/acs"
 	})
-	_, err = p.ValidateResponseXML(context.Background(), []byte(doc), url.URL{}, nil)
+	_, err = p.ValidateResponseXML(context.Background(), []byte(encryptedOnlyResponse), url.URL{}, nil)
 	if !errors.Is(err, ErrEncryptedAssertionNotAllowed) {
 		t.Fatalf("err = %v, want ErrEncryptedAssertionNotAllowed", err)
 	}

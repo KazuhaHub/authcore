@@ -56,8 +56,45 @@ jobs:
             exit 1
           fi
 
+      # The tests passing says nothing about whether this file is valid.
+      # actionlint checks expressions, job wiring and action inputs, and runs
+      # the shellcheck the runner image ships over every run: script. Same
+      # version as Passwall-Node and the Report Portal. It compiles cold, about
+      # 10 s, until go.sum changes and setup-go saves a cache that holds it.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
       - name: go test -race
         run: go test ./... -race -count=1
+
+      # THE FLOOR IS NOT WHAT CONSUMERS BUILD WITH. The steps above run go.mod's
+      # go line, 1.26.0 exactly, which proves that line honest. Passwall-Sub-
+      # Panel builds with its toolchain line, go1.27.1, and the Report Portal
+      # with go 1.26.6. saml and passkey lean on encoding/xml, crypto/x509 and
+      # crypto/rsa, whose behaviour moves between minors, and a break there
+      # would surface as a consumer's test failure, far from its cause. This
+      # tests the newest consumer toolchain as the other end; 1.26.6 sits
+      # between the two, and a patch release only backports fixes.
+      #
+      # Without -race: races are a property of the code, checked once above,
+      # and the race build costs a third more (40 s against 30 s, measured cold
+      # locally). Move the version when a consumer's toolchain line reaches a
+      # new minor; a patch bump needs nothing here.
+      #
+      # cache: false because this setup's key would be go-1.27.1 plus go.sum,
+      # the govulncheck job's key, and two jobs saving one key freeze whichever
+      # saves first. The 1.26.0 setup above saves the whole build directory,
+      # this step's objects included, whenever go.sum changes.
+      - name: Set up Go 1.27.1
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          cache: false
+
+      - name: go test (go1.27.1)
+        run: |
+          test "$(go env GOVERSION)" = go1.27.1
+          go test ./... -count=1
 
   govulncheck:
     name: govulncheck
@@ -69,8 +106,106 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The action installs its own Go, and its go-version-input (default
+      # "stable") always wins over go-version-file: setup-go warned that only
+      # go-version would be used on every run, and scanned with 1.27.1, not
+      # go.mod's 1.26.0. Stable is the right choice for a library anyway. Which
+      # standard library ships is each consumer's call, and their own
+      # govulncheck runs judge that one; this scan is for authcore's code and
+      # the modules it requires. weekly.yml runs the same scan on a timer.
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          go-version-file: go.mod
+          go-version-input: stable
           repo-checkout: false
+
+  # WHAT A CONSUMER'S TAG BUMP WILL HIT. Passwall-Sub-Panel and the Report
+  # Portal pin a tag and move it by hand, so an exported name removed or
+  # changed here surfaces only when their bump stops compiling, after the tag
+  # is immutable. This compares the API with the newest vX.Y.Z tag and fails
+  # on an incompatible change THIS PULL REQUEST introduces. Breaks already on
+  # main are printed but do not fail; the pull request that made each one was
+  # red already, and repeating it on every later one would teach nobody
+  # anything.
+  #
+  # AN INTENDED BREAK: before v1 it is allowed (README, Versioning policy);
+  # the red makes it a decision instead of an accident. This check is not
+  # required. Name the break in the pull request, merge over it, and put it in
+  # the next tag's message, which is the release note consumers read. From v1
+  # on it means a new major version instead.
+  #
+  # Pull requests only, and only when a non-test .go file changed. Without
+  # one, apidiff would read the same authcore source as the base and find
+  # nothing new, so a docs, workflow or go.mod-only change stops after the
+  # checkout. A Dependabot bump can still change a dependency type authcore
+  # exports (passkey returns webauthn.Credential, saml a crewjam
+  # EntityDescriptor), but apidiff compares types from other modules by
+  # package path and name only, so running it there would not report that
+  # either.
+  api-compat:
+    name: API compatibility with the latest tag
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # HEAD is this pull request merged into its base; HEAD^1 is the base.
+          fetch-depth: 2
+
+      - name: Does the change touch non-test Go?
+        id: scope
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- '*.go' ':(exclude)*_test.go'; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Uncached: this key would be the build job's (go-1.26.0 plus go.sum),
+      # and a save from here would freeze apidiff's objects into it.
+      - name: Set up Go
+        if: steps.scope.outputs.go == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # apidiff exits 0 whatever it finds, so the verdict is whether
+      # -incompatible printed a line the base did not already print.
+      - name: apidiff against the latest tag
+        if: steps.scope.outputs.go == 'true'
+        env:
+          APIDIFF: golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
+        run: |
+          set -euo pipefail
+          tag=$(git ls-remote --tags --refs origin 'v*' \
+            | awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+$/ { sub("^refs/tags/", "", $2); print $2 }' \
+            | sort -V | tail -n 1)
+          if [ -z "$tag" ]; then
+            echo "No vX.Y.Z tag yet, so no released API to compare with."
+            exit 0
+          fi
+          module=$(go list -m)
+          git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add --quiet --detach "$RUNNER_TEMP/tag" "$tag"
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" HEAD^1
+          (cd "$RUNNER_TEMP/tag" && go run "$APIDIFF" -m -w "$RUNNER_TEMP/tag.api" "$module")
+          (cd "$RUNNER_TEMP/base" && go run "$APIDIFF" -m -incompatible "$RUNNER_TEMP/tag.api" "$module") > "$RUNNER_TEMP/base.txt"
+          go run "$APIDIFF" -m -incompatible "$RUNNER_TEMP/tag.api" "$module" > "$RUNNER_TEMP/head.txt"
+          if [ -s "$RUNNER_TEMP/head.txt" ]; then
+            echo "Incompatible with $tag after this pull request:"
+            cat "$RUNNER_TEMP/head.txt"
+          else
+            echo "Compatible with $tag."
+          fi
+          introduced=$(grep -vxF -f "$RUNNER_TEMP/base.txt" "$RUNNER_TEMP/head.txt" || true)
+          if [ -n "$introduced" ]; then
+            echo "::error title=API break against $tag::This pull request breaks the API $tag published. If that is intended, see the comment on this job in ci.yml."
+            echo "Introduced here:"
+            echo "$introduced"
+            exit 1
+          fi
