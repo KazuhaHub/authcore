@@ -6,7 +6,7 @@ require (
 	github.com/beevik/etree v1.7.0
 	github.com/crewjam/saml v0.5.1
 	github.com/descope/virtualwebauthn v1.0.5
-	github.com/go-webauthn/webauthn v0.18.1
+	github.com/go-webauthn/webauthn v0.18.2
 	github.com/mattermost/xml-roundtrip-validator v0.1.0
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/mojocn/base64Captcha v1.3.8
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
