@@ -1,6 +1,10 @@
 package geoip
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
 
 // ---- dual-schema decoding (synthetic records) --------------------------
 //
@@ -100,6 +104,215 @@ func TestMapRecord_Nil(t *testing.T) {
 	}
 }
 
+// ---- coordinates and region code (synthetic records) --------------------
+//
+// The values below are the Go types maxminddb-golang v1 produces when it
+// decodes into map[string]any: a double arrives as float64, every unsigned
+// width (uint16 accuracy_radius included) as uint64, an int32 as int, a
+// single-precision float as float32. The end-to-end test further down
+// confirms those types against the real decoder.
+
+func TestMapRecord_MaxMindCoordinates(t *testing.T) {
+	rec := map[string]any{
+		"country": map[string]any{
+			"iso_code": "CN",
+			"names":    map[string]any{"en": "China"},
+		},
+		"city": map[string]any{"names": map[string]any{"en": "Guangzhou"}},
+		"subdivisions": []any{
+			map[string]any{"iso_code": "GD", "names": map[string]any{"en": "Guangdong"}},
+		},
+		"location": map[string]any{
+			"latitude":        23.125,
+			"longitude":       113.25,
+			"accuracy_radius": uint64(50),
+			"time_zone":       "Asia/Shanghai",
+		},
+	}
+	want := Location{
+		CountryCode: "CN", Country: "China", Region: "Guangdong", City: "Guangzhou",
+		RegionCode: "GD", Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 50,
+	}
+	if got := mapRecord(rec); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestMapRecord_DBIPCoordinatesWithoutRadius(t *testing.T) {
+	// DB-IP City Lite documents latitude and longitude, no accuracy_radius,
+	// and subdivision names only.
+	rec := map[string]any{
+		"country":      map[string]any{"iso_code": "CN", "names": map[string]any{"en": "China"}},
+		"subdivisions": []any{map[string]any{"names": map[string]any{"en": "Guangdong"}}},
+		"location":     map[string]any{"latitude": 23.125, "longitude": 113.25},
+	}
+	want := Location{
+		CountryCode: "CN", Country: "China", Region: "Guangdong",
+		Latitude: 23.125, Longitude: 113.25,
+	}
+	if got := mapRecord(rec); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestMapRecord_CountryOnlyHasNoCoordinates(t *testing.T) {
+	rec := map[string]any{
+		"country": map[string]any{"iso_code": "DE", "names": map[string]any{"en": "Germany"}},
+	}
+	if got, want := mapRecord(rec), (Location{CountryCode: "DE", Country: "Germany"}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestMapRecord_IPinfoLiteUnchanged(t *testing.T) {
+	// Every field ipinfo Lite ships. None of them is a coordinate or a
+	// subdivision, so the result must be exactly what it was before those
+	// fields existed: the whole struct is compared, not the fields of
+	// interest, so a key that starts leaking into a new field fails here.
+	rec := map[string]any{
+		"asn":            "AS64496", // RFC 5398 documentation ASN
+		"as_name":        "Example Networks",
+		"as_domain":      "example.com",
+		"country_code":   "hk",
+		"country":        "Hong Kong",
+		"continent_code": "AS",
+		"continent":      "Asia",
+	}
+	if got, want := mapRecord(rec), (Location{CountryCode: "HK", Country: "Hong Kong"}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestMapRecord_CoordinateNumericTypes(t *testing.T) {
+	cases := []struct {
+		name     string
+		lat, lon any
+		radius   any
+		want     Location
+	}{
+		{"float64", 23.125, 113.25, uint64(50), Location{Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 50}},
+		{"float32", float32(23.125), float32(113.25), uint64(50), Location{Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 50}},
+		{"uint64", uint64(23), uint64(113), uint64(50), Location{Latitude: 23, Longitude: 113, AccuracyRadiusKm: 50}},
+		{"int", int(-23), int(-113), int(50), Location{Latitude: -23, Longitude: -113, AccuracyRadiusKm: 50}},
+		{"int64", int64(-23), int64(-113), int64(50), Location{Latitude: -23, Longitude: -113, AccuracyRadiusKm: 50}},
+		{"bounds-inclusive", 90.0, -180.0, uint64(0), Location{Latitude: 90, Longitude: -180}},
+		// A fractional radius is rounded up, never down, so the field never
+		// claims more precision than the database did.
+		{"fractional-radius", 23.125, 113.25, 2.1, Location{Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 3}},
+		{"radius-at-half-circumference", 23.125, 113.25, uint64(20037), Location{Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 20037}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := map[string]any{"location": map[string]any{
+				"latitude": c.lat, "longitude": c.lon, "accuracy_radius": c.radius,
+			}}
+			if got := mapRecord(rec); got != c.want {
+				t.Fatalf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMapRecord_UnusableCoordinates(t *testing.T) {
+	// Whatever is wrong with the location block, the rest of the record is
+	// still read and nothing panics. Latitude and longitude are a pair: if
+	// either is unusable, neither is set, because half a coordinate read as
+	// its zero would be a real point on the equator or the prime meridian.
+	// The radius is set only alongside a pair, since it is a distance from
+	// that point.
+	named := Location{CountryCode: "US", Country: "United States", Region: "Test State", RegionCode: "TS"}
+	withPair := named
+	withPair.Latitude, withPair.Longitude = 40.5, -89.25
+
+	cases := []struct {
+		name     string
+		location any
+		want     Location
+	}{
+		{"string-latitude", map[string]any{"latitude": "40.5", "longitude": -89.25, "accuracy_radius": uint64(20)}, named},
+		{"latitude-200", map[string]any{"latitude": 200.0, "longitude": -89.25, "accuracy_radius": uint64(20)}, named},
+		{"latitude-below-minus-90", map[string]any{"latitude": -90.5, "longitude": -89.25}, named},
+		{"longitude-above-180", map[string]any{"latitude": 40.5, "longitude": 180.5}, named},
+		{"latitude-nan", map[string]any{"latitude": math.NaN(), "longitude": -89.25}, named},
+		{"longitude-inf", map[string]any{"latitude": 40.5, "longitude": math.Inf(1)}, named},
+		{"latitude-bool", map[string]any{"latitude": true, "longitude": -89.25}, named},
+		{"longitude-missing", map[string]any{"latitude": 40.5, "accuracy_radius": uint64(20)}, named},
+		{"radius-without-coordinates", map[string]any{"accuracy_radius": uint64(20)}, named},
+		// (0, 0) is where a database with no answer puts one, and the
+		// zero value already means "no coordinates": a radius around it
+		// would describe nothing.
+		{"null-island", map[string]any{"latitude": 0.0, "longitude": 0.0, "accuracy_radius": uint64(20)}, named},
+		{"negative-radius-int", map[string]any{"latitude": 40.5, "longitude": -89.25, "accuracy_radius": int(-5)}, withPair},
+		{"negative-radius-float", map[string]any{"latitude": 40.5, "longitude": -89.25, "accuracy_radius": -0.5}, withPair},
+		{"radius-wider-than-the-earth", map[string]any{"latitude": 40.5, "longitude": -89.25, "accuracy_radius": uint64(20038)}, withPair},
+		{"radius-nan", map[string]any{"latitude": 40.5, "longitude": -89.25, "accuracy_radius": math.NaN()}, withPair},
+		{"radius-string", map[string]any{"latitude": 40.5, "longitude": -89.25, "accuracy_radius": "20"}, withPair},
+		{"location-a-string", "40.5,-89.25", named},
+		{"location-a-slice", []any{40.5, -89.25}, named},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := map[string]any{
+				"country": map[string]any{"iso_code": "US", "names": map[string]any{"en": "United States"}},
+				"subdivisions": []any{
+					map[string]any{"iso_code": "TS", "names": map[string]any{"en": "Test State"}},
+				},
+				"location": c.location,
+			}
+			if got := mapRecord(rec); got != c.want {
+				t.Fatalf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMapRecord_RegionCode(t *testing.T) {
+	cases := []struct {
+		name string
+		subs any
+		want string
+	}{
+		{"upper-cased-and-trimmed", []any{map[string]any{"iso_code": " gd "}}, "GD"},
+		{"first-subdivision-only", []any{map[string]any{"iso_code": "ENG"}, map[string]any{"iso_code": "LND"}}, "ENG"},
+		{"no-iso-code", []any{map[string]any{"names": map[string]any{"en": "Guangdong"}}}, ""},
+		{"iso-code-not-a-string", []any{map[string]any{"iso_code": uint64(44)}}, ""},
+		{"no-subdivisions", []any{}, ""},
+		{"subdivision-not-a-map", []any{"GD"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := mapRecord(map[string]any{"subdivisions": c.subs}).RegionCode; got != c.want {
+				t.Fatalf("RegionCode = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// ---- JSON shape -----------------------------------------------------------
+
+func TestLocation_JSON(t *testing.T) {
+	// A consumer that aliases Location and serializes it (RP's audit output
+	// does) must see the same bytes as before for a record with no
+	// coordinates: every new key is omitempty.
+	old, err := json.Marshal(Location{CountryCode: "US", Country: "United States", Region: "Test State", City: "Testville"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"country_code":"US","country":"United States","region":"Test State","city":"Testville"}`; string(old) != want {
+		t.Fatalf("got %s, want %s", old, want)
+	}
+
+	full, err := json.Marshal(Location{
+		CountryCode: "CN", RegionCode: "GD", Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"country_code":"CN","region_code":"GD","latitude":23.125,"longitude":113.25,"accuracy_radius_km":50}`; string(full) != want {
+		t.Fatalf("got %s, want %s", full, want)
+	}
+}
+
 // ---- IsResolvable --------------------------------------------------------
 
 func TestIsResolvable(t *testing.T) {
@@ -162,7 +375,10 @@ func TestReader_Lookup_EndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Lookup: %v", err)
 		}
-		want := Location{CountryCode: "US", Country: "United States", Region: "Test State", City: "Testville"}
+		want := Location{
+			CountryCode: "US", Country: "United States", Region: "Test State", City: "Testville",
+			RegionCode: "TS", Latitude: 40.5, Longitude: -89.25, AccuracyRadiusKm: 20,
+		}
 		if got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
@@ -184,8 +400,9 @@ func TestReader_Lookup_EndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Lookup: %v", err)
 		}
-		if got.CountryCode != "DE" || got.Country != "ドイツ" {
-			t.Fatalf("got %+v, want DE/ドイツ", got)
+		// A country-level record: no location block, so no coordinates.
+		if want := (Location{CountryCode: "DE", Country: "ドイツ"}); got != want {
+			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
 
@@ -239,5 +456,30 @@ func TestLocation_Empty(t *testing.T) {
 	}
 	if (Location{CountryCode: "US"}).Empty() {
 		t.Fatal("Location with CountryCode set .Empty() = true, want false")
+	}
+	// Empty still asks only whether there is a named place to show; the
+	// fields added later do not change its answer.
+	if !(Location{RegionCode: "GD", Latitude: 23.125, Longitude: 113.25, AccuracyRadiusKm: 50}).Empty() {
+		t.Fatal("Location with only a region code and coordinates .Empty() = false, want true")
+	}
+}
+
+func TestReader_Lookup_Coordinates(t *testing.T) {
+	r, err := Open(buildCoordinatesFixture(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+
+	for _, c := range coordinateCases() {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := r.Lookup(c.ip)
+			if err != nil {
+				t.Fatalf("Lookup(%s): %v", c.ip, err)
+			}
+			if got != c.want {
+				t.Fatalf("Lookup(%s) = %+v, want %+v", c.ip, got, c.want)
+			}
+		})
 	}
 }

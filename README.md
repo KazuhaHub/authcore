@@ -209,6 +209,41 @@ defer w.Close()
 loc := w.Lookup("203.0.113.1") // never errors; empty Location on any failure
 ```
 
+Which `Location` fields a lookup fills depends on the database, not on the
+address. Every field is optional and `omitempty` in JSON:
+
+| Field | GeoLite2 / GeoIP2 City | DB-IP City Lite | ipinfo Lite | Country-level databases |
+|---|---|---|---|---|
+| `CountryCode`, `Country` | yes | yes | yes | yes |
+| `Region`, `City` | yes | yes | — | — |
+| `RegionCode` (`subdivisions[0].iso_code`, e.g. `GD`) | yes | when present, see below | — | — |
+| `Latitude`, `Longitude` | yes | yes | — | — |
+| `AccuracyRadiusKm` | yes | — | — | — |
+
+"Yes" means the database has the field, not that every record does. DB-IP's
+format page lists only `names` under `subdivisions` in its schema, but the
+sample record on the same page also carries `iso_code`, so `RegionCode` is
+filled when a record has one and is empty otherwise.
+
+`RegionCode` is the ISO 3166-2 code without the country prefix (`GD`, not
+`CN-GD`), upper-cased like `CountryCode`. `Latitude` and `Longitude` are
+WGS84 degrees and come as a pair: if either is missing, of the wrong type,
+NaN or out of range, both are zero, and `(0, 0)` means no coordinates.
+`AccuracyRadiusKm` is the radius around that point within which the database
+expects the address to be; `0` means the database gave none, not that the
+point is exact. A radius that is negative or wider than half the Earth's
+circumference is dropped. None of this is ever an error: a value the package
+cannot use is a value it does not have, and the rest of the record is still
+returned.
+
+The coordinates place the network, not the device. MaxMind documents them as
+an area, not a location, and the radius is how big that area is. Any distance
+you compute from two lookups is your policy to interpret. `Empty()` still looks
+only at `CountryCode`, `Country`, `Region` and `City`. If you serialize
+`Location` directly, as a type alias does, a record without coordinates
+produces the same JSON as before these fields existed, and a record with them
+gains `region_code`, `latitude`, `longitude` and `accuracy_radius_km`.
+
 ### `saml`
 
 ```go
