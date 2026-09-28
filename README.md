@@ -219,6 +219,7 @@ address. Every field is optional and `omitempty` in JSON:
 | `RegionCode` (`subdivisions[0].iso_code`, e.g. `GD`) | yes | when present, see below | — | — |
 | `Latitude`, `Longitude` | yes | yes | — | — |
 | `AccuracyRadiusKm` | yes | — | — | — |
+| `LocalizedNames` | when alternate names exist | when alternate names exist | — | when alternate names exist |
 
 "Yes" means the database has the field, not that every record does. DB-IP's
 format page lists only `names` under `subdivisions` in its schema, but the
@@ -236,13 +237,21 @@ circumference is dropped. None of this is ever an error: a value the package
 cannot use is a value it does not have, and the rest of the record is still
 returned.
 
+`LocalizedNames` preserves the database's alternate country, subdivision and
+city names as locale-keyed maps (for example `zh-CN`). It is present only when
+a place carries at least two usable language variants; callers should select
+their current interface locale and fall back to the corresponding flat name.
+The package never translates a name or sends an address to an external service.
+
 The coordinates place the network, not the device. MaxMind documents them as
 an area, not a location, and the radius is how big that area is. Any distance
 you compute from two lookups is your policy to interpret. `Empty()` still looks
 only at `CountryCode`, `Country`, `Region` and `City`. If you serialize
 `Location` directly, as a type alias does, a record without coordinates
-produces the same JSON as before these fields existed, and a record with them
-gains `region_code`, `latitude`, `longitude` and `accuracy_radius_km`.
+produces the same JSON as before these fields existed unless the database also
+offers alternate names. A record with additional data gains the corresponding
+`region_code`, `latitude`, `longitude`, `accuracy_radius_km`, or
+`localized_names` fields.
 
 ### `saml`
 
