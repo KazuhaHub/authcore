@@ -34,6 +34,9 @@ func TestMapRecord_MaxMindSchema(t *testing.T) {
 	if got.Region != "Central and Western" {
 		t.Fatalf("region = %q, want Central and Western", got.Region)
 	}
+	if got.LocalizedNames == nil || got.LocalizedNames.Country["zh-CN"] != "香港" {
+		t.Fatalf("localized country names = %#v, want zh-CN Hong Kong", got.LocalizedNames)
+	}
 	if got.Empty() {
 		t.Fatal("Empty() = true for a fully-populated record")
 	}

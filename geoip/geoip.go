@@ -73,6 +73,18 @@ type Location struct {
 	// gave none (DB-IP Lite documents none), not that the point is exact; it
 	// is always 0 when there are no coordinates.
 	AccuracyRadiusKm int `json:"accuracy_radius_km,omitempty"`
+	// LocalizedNames preserves alternate names supplied by a MaxMind-format
+	// database. It is omitted when the record has no alternate language, so
+	// English-only and flat-schema responses keep their original JSON shape.
+	LocalizedNames *LocalizedNames `json:"localized_names,omitempty"`
+}
+
+// LocalizedNames groups the optional locale-to-name maps carried by MaxMind
+// records. Locale keys are BCP 47-like database keys such as en or zh-CN.
+type LocalizedNames struct {
+	Country map[string]string `json:"country,omitempty"`
+	Region  map[string]string `json:"region,omitempty"`
+	City    map[string]string `json:"city,omitempty"`
 }
 
 // Empty reports whether the lookup found nothing worth showing. Useful for
@@ -186,6 +198,7 @@ func mapRecord(rec map[string]any) Location {
 	case map[string]any: // MaxMind / GeoLite2 / DB-IP schema
 		out.CountryCode = str(c["iso_code"])
 		out.Country = localizedName(c)
+		out.setLocalized("country", localizedNames(c))
 	case string: // ipinfo Lite schema: country is the NAME, code in its own field
 		out.Country = c
 		out.CountryCode = str(rec["country_code"])
@@ -201,6 +214,7 @@ func mapRecord(rec map[string]any) Location {
 
 	if city, ok := rec["city"].(map[string]any); ok {
 		out.City = localizedName(city)
+		out.setLocalized("city", localizedNames(city))
 	} else {
 		out.City = str(rec["city"])
 	}
@@ -209,6 +223,7 @@ func mapRecord(rec map[string]any) Location {
 		if first, ok := subs[0].(map[string]any); ok {
 			out.Region = localizedName(first)
 			out.RegionCode = strings.ToUpper(str(first["iso_code"]))
+			out.setLocalized("region", localizedNames(first))
 		}
 	}
 	if out.Region == "" {
@@ -221,6 +236,40 @@ func mapRecord(rec map[string]any) Location {
 		out.Latitude, out.Longitude, out.AccuracyRadiusKm = coordinates(loc)
 	}
 	return out
+}
+
+func localizedNames(m map[string]any) map[string]string {
+	raw, ok := m["names"].(map[string]any)
+	if !ok || len(raw) < 2 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for locale, value := range raw {
+		if name := str(value); name != "" {
+			out[locale] = name
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+func (l *Location) setLocalized(kind string, names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	if l.LocalizedNames == nil {
+		l.LocalizedNames = &LocalizedNames{}
+	}
+	switch kind {
+	case "country":
+		l.LocalizedNames.Country = names
+	case "region":
+		l.LocalizedNames.Region = names
+	case "city":
+		l.LocalizedNames.City = names
+	}
 }
 
 // maxAccuracyRadiusKm is the largest accuracy_radius taken at face value:
