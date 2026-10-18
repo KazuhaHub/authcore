@@ -2,6 +2,7 @@ package saml
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -116,15 +117,14 @@ func TestMemoryReplayCache_CapacityBound(t *testing.T) {
 	c := NewMemoryReplayCache(capacity)
 	ctx := context.Background()
 	now := time.Now()
-	// Every entry valid for a long time, so the sweep-expired-first pass
-	// in evictToFit cannot free anything and the low-water eviction must
-	// kick in instead.
+	// All records stay valid; excess admissions must fail without eviction.
 	exp := now.Add(24 * time.Hour)
 
 	for i := 0; i < capacity*5; i++ {
 		id := randomID(i)
-		if _, err := c.SeenOrAdd(ctx, id, exp, now); err != nil {
-			t.Fatalf("SeenOrAdd(%d): %v", i, err)
+		_, err := c.SeenOrAdd(ctx, id, exp, now)
+		if (i < capacity && err != nil) || (i >= capacity && !errors.Is(err, ErrReplayCacheFull)) {
+			t.Fatalf("SeenOrAdd(%d): unexpected capacity result %v", i, err)
 		}
 		if c.Len() > capacity {
 			t.Fatalf("Len() = %d after %d inserts, exceeds capacity %d", c.Len(), i+1, capacity)
@@ -132,7 +132,7 @@ func TestMemoryReplayCache_CapacityBound(t *testing.T) {
 	}
 }
 
-func TestMemoryReplayCache_SweepsExpiredBeforeEvicting(t *testing.T) {
+func TestMemoryReplayCache_SweepsExpiredBeforeRejectingFull(t *testing.T) {
 	const capacity = 50
 	c := NewMemoryReplayCache(capacity)
 	ctx := context.Background()
@@ -149,8 +149,7 @@ func TestMemoryReplayCache_SweepsExpiredBeforeEvicting(t *testing.T) {
 	}
 
 	// One more insert, still valid, should trigger the expired sweep and
-	// leave the cache well under capacity rather than evicting anything
-	// unnecessarily via the low-water path.
+	// admit the new record without discarding any unexpired record.
 	if _, err := c.SeenOrAdd(ctx, "fresh", now.Add(time.Hour), now); err != nil {
 		t.Fatalf("insert after seeding: %v", err)
 	}

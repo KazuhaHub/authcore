@@ -2,7 +2,6 @@ package saml
 
 import (
 	"context"
-	"sort"
 	"sync"
 	"time"
 )
@@ -39,13 +38,9 @@ type ReplayCache interface {
 }
 
 // MemoryReplayCache is an in-memory ReplayCache with a hard capacity bound
-// and lazy, write-time TTL eviction. It never grows without limit: once
-// the entry count reaches its capacity, expired entries are swept first,
-// and if that is not enough to make room, the soonest-to-expire entries
-// are evicted down to a low-water mark (94% of capacity) to make room for
-// new ones. Evicting the entries closest to expiry anyway loses the least
-// replay protection under sustained pressure from an attacker flooding
-// distinct, still-valid assertion IDs.
+// and lazy expiry cleanup. At capacity, expired records are removed first.
+// If every record is still valid, new IDs receive ErrReplayCacheFull. Accepted
+// assertion IDs remain protected until expiry, including under capacity pressure.
 //
 // A MemoryReplayCache protects a single process. A caller that needs
 // replay protection to survive a restart, or to be shared across more
@@ -67,11 +62,12 @@ func NewMemoryReplayCache(capacity int) *MemoryReplayCache {
 	}
 	return &MemoryReplayCache{
 		capacity: capacity,
-		items:    make(map[string]time.Time, 128),
+		items:    make(map[string]time.Time, min(capacity, 128)),
 	}
 }
 
-// SeenOrAdd implements ReplayCache. It never returns a non-nil error.
+// SeenOrAdd implements ReplayCache. New IDs receive ErrReplayCacheFull when no
+// expired record can make room. Existing unexpired IDs still return seen=true.
 func (c *MemoryReplayCache) SeenOrAdd(_ context.Context, id string, expiresAt time.Time, now time.Time) (bool, error) {
 	if id == "" {
 		// The caller (Provider) never does this, but a direct caller of
@@ -97,14 +93,17 @@ func (c *MemoryReplayCache) SeenOrAdd(_ context.Context, id string, expiresAt ti
 		// reopen a real replay window, it just reclaims the slot.
 	}
 
-	c.evictToFit(now)
+	c.sweepExpired(now)
+	if len(c.items) >= c.capacity {
+		return false, ErrReplayCacheFull
+	}
 	c.items[id] = expiresAt
 	return false, nil
 }
 
-// evictToFit makes room for one more entry if the cache is at capacity.
+// sweepExpired reclaims expired entries when the cache is at capacity.
 // Caller holds c.mu.
-func (c *MemoryReplayCache) evictToFit(now time.Time) {
+func (c *MemoryReplayCache) sweepExpired(now time.Time) {
 	if len(c.items) < c.capacity {
 		return
 	}
@@ -113,26 +112,6 @@ func (c *MemoryReplayCache) evictToFit(now time.Time) {
 		if !now.Before(exp) {
 			delete(c.items, k)
 		}
-	}
-	if len(c.items) < c.capacity {
-		return
-	}
-	// Still full: every entry is a distinct, still-valid ID (a flood of
-	// unique assertion IDs, or a capacity set too low for real traffic).
-	// Evict the soonest-to-expire entries down to a low-water mark so
-	// this doesn't run on every single write while pinned at capacity.
-	type kv struct {
-		key string
-		exp time.Time
-	}
-	all := make([]kv, 0, len(c.items))
-	for k, exp := range c.items {
-		all = append(all, kv{k, exp})
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].exp.Before(all[j].exp) })
-	lowWater := c.capacity - c.capacity/16
-	for i := 0; i < len(all) && len(c.items) > lowWater; i++ {
-		delete(c.items, all[i].key)
 	}
 }
 

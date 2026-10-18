@@ -398,3 +398,14 @@ migrated endpoints — see that repository's README for its route-alignment
 table — to confirm the specific attack classes (replay, decompression
 bombs, counter rollback, chain tampering, etc.) are still rejected after
 the migration, not just that the code compiles.
+
+## SAML memory replay capacity
+
+The memory replay cache now retains every accepted ID until expiry. When all
+slots contain unexpired IDs, a new ID returns `saml.ErrReplayCacheFull` and the
+provider rejects that response. Existing IDs continue to return `ErrReplayed`.
+The interface is unchanged; callers must continue treating cache errors as failed
+validation. Capacity pressure therefore temporarily refuses new logins rather
+than forgetting still-valid assertions. Size the cache for the accepted assertion
+rate and expiry window, or supply a durable store for restart/multi-instance use.
+This supersedes the former earliest-expiry eviction behavior.
