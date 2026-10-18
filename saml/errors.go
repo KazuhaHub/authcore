@@ -20,6 +20,10 @@ var (
 	// assertion ID it has already accepted within its acceptance window.
 	ErrReplayed = errors.New("saml: assertion already consumed (replay)")
 
+	// ErrReplayCacheFull rejects a new assertion when all memory-cache records
+	// are still valid. Existing records are never evicted to admit a new ID.
+	ErrReplayCacheFull = errors.New("saml: replay cache capacity exhausted")
+
 	// ErrTooManyAssertions is returned when a Response carries more than
 	// one top-level Assertion/EncryptedAssertion element. crewjam/saml
 	// silently picks the first assertion that parses and validates; on
