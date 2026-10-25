@@ -21,8 +21,33 @@ returned no assertion, against the LICENSE file's actual text), and the
 dependency set itself was confirmed against `go list -m all` and `go mod why`
 against this module's actual `go.mod`, as of 2026-09-17.
 
+The OIDC additions below were checked against the pinned module LICENSE and
+NOTICE files on 2026-10-25.
+
 Direct dependencies (imported directly by this module's packages)
 ------------------------------------------------------------------------------
+
+* github.com/coreos/go-oidc/v3
+  Used by: oidc (discovery and signed ID-token verification)
+  License: Apache-2.0
+  https://github.com/coreos/go-oidc
+
+  CoreOS Project
+  Copyright 2014 CoreOS, Inc
+
+  This product includes software developed at CoreOS, Inc.
+  (http://www.coreos.com/).
+
+* github.com/go-jose/go-jose/v4
+  Used by: oidc (signed test IdP; verification through go-oidc at runtime)
+  License: Apache-2.0
+  https://github.com/go-jose/go-jose
+
+* golang.org/x/oauth2
+  Used by: oidc (authorization-code exchange and PKCE)
+  License: BSD-3-Clause
+  Copyright 2009 The Go Authors.
+  https://github.com/golang/oauth2
 
 * github.com/crewjam/saml
   Used by: saml (SP-side SAML 2.0 orchestration: AuthnRequest issuance,
