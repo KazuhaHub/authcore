@@ -409,3 +409,24 @@ validation. Capacity pressure therefore temporarily refuses new logins rather
 than forgetting still-valid assertions. Size the cache for the accepted assertion
 rate and expiry window, or supply a durable store for restart/multi-instance use.
 This supersedes the former earliest-expiry eviction behavior.
+
+
+## OIDC authorization-code package (unreleased)
+
+The new `oidc` leaf adds protocol orchestration without changing the SAML,
+passkey, captcha or geoip APIs. It uses coreos/go-oidc/v3 v3.21.0 and x/oauth2
+v0.37.0; the module floor remains Go 1.26.0. Existing v0.6.2 consumers do not have
+this package until they select a verified version containing it.
+
+Read [the OIDC integration contract](oidc/README.md) before adoption. Persist all
+four protocol-state fields privately, enforce browser binding/expiry, and consume
+state atomically before completion. State is deliberately omitted from default
+JSON and has no application model or persistence backend. Do not treat a successful
+ID-token verification as account admission or infer an identity from email alone.
+
+A supplied HTTP client must carry the deployment's TLS and network restrictions.
+Discovery, JWKS and token calls use it with body/time limits. Explicit token
+authentication removes OAuth's default trial retry; token redirects are refused.
+Treat fixed protocol errors as denials and initiate a new flow after a failed or
+uncertain code exchange. Existing cookies, sessions, audits and database authority
+checks remain application responsibilities.

@@ -12,7 +12,8 @@
 extracted from three separate services that had each reimplemented the same
 things: rate limiting, captcha issuance, IP-to-location lookup, and — as of
 `saml` and `passkey` — SAML/WebAuthn ceremony orchestration and
-activity logging.
+activity logging. `oidc` adds authorization-code orchestration on the same
+mechanism-only boundary.
 
 ## Design principle: share mechanism, not policy
 
@@ -39,13 +40,13 @@ Concretely, this means:
   its own middleware shape (e.g. gin's `gin.HandlerFunc`) writes a small
   adapter in their own code; that adapter is intentionally not part of this
   module.
-- **Packages don't depend on each other.** `captcha`, `geoip`, `saml`, and
-  `passkey` are independent leaves. None imports another package in this
+- **Packages don't depend on each other.** `captcha`, `geoip`, `saml`, `passkey`, and
+  `oidc` are independent leaves. None imports another package in this
   module. Pull in exactly the ones you need.
 
 ### Why there is no `identity` or `authflow` package
 
-Session management, login flows, password/OTP verification, token issuance,
+Application sessions, account admission, password/OTP verification, token issuance,
 and anything else that has to reason about "who is this and what are they
 allowed to do" is **policy**, not mechanism — it is inseparable from an
 application's account model, which is exactly what this module refuses to
@@ -63,11 +64,13 @@ Each is an **orchestration layer over a protocol library**
 - `saml` turns a validated SAML Response into a neutral `Assertion` (NameID,
   attributes, session index). It never decides what a NameID or attribute
   means for your account model.
+- `oidc` validates an authorization-code flow into issuer/subject and neutral
+  claims. Browser-bound persistence and account admission remain in the caller.
 - `passkey` runs a WebAuthn ceremony against an opaque, caller-supplied
   **user handle** — a byte string it round-trips and never interprets — not
   a `User` type.
 
-None of the three know what a NameID, a user handle, or an actor ID mean
+These packages do not interpret a NameID, subject, user handle, or actor ID
 beyond byte equality; mapping any of them onto an account is left entirely
 to the caller, exactly like every other package in this module.
 
@@ -106,6 +109,7 @@ split later.
 | [`geoip`](./geoip) | Offline IP-to-location lookup against a local MaxMind-format (`.mmdb`) database, with optional hot-reload | [`oschwald/maxminddb-golang`](https://github.com/oschwald/maxminddb-golang) |
 | [`saml`](./saml) | SAML 2.0 Service Provider orchestration: AuthnRequest issuance, SP metadata, Response/Assertion validation with replay, multi-assertion, decompression-bomb and weak-signature defenses `crewjam/saml` leaves to the caller | [`crewjam/saml`](https://github.com/crewjam/saml) |
 | [`passkey`](./passkey) | WebAuthn ceremony orchestration: registration, allow-listed login, and discoverable (usernameless) login, keyed by an opaque user handle | [`go-webauthn/webauthn`](https://github.com/go-webauthn/webauthn) |
+| [`oidc`](./oidc) (unreleased) | Authorization code, PKCE, state/nonce and signed ID-token validation with bounded HTTPS and explicit token authentication | [`coreos/go-oidc/v3`](https://github.com/coreos/go-oidc), [`x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2) |
 
 Each package has its own doc comment with the full design rationale; the
 table above is just a map to find the right one.
@@ -445,8 +449,11 @@ concern, not housekeeping.
     library (`passkey`)
   - `github.com/golang-jwt/jwt/v5` **v5.3.1** — a `go-webauthn` dependency,
     through its SafetyNet attestation check (`passkey`)
-  - `github.com/coreos/go-oidc/v3` — reserved for the forthcoming `oidc`
-    package; not yet a dependency of this module.
+  - `github.com/coreos/go-oidc/v3` **v3.21.0** — signed ID-token verification
+    and discovery (`oidc`)
+  - `golang.org/x/oauth2` **v0.37.0** — authorization-code exchange and PKCE (`oidc`)
+  - `github.com/go-jose/go-jose/v4` **v4.1.6** — JWS verification through go-oidc;
+    also used directly by the signed test IdP (`oidc`)
 
   `github.com/descope/virtualwebauthn` is pinned the same way but is a
   **test-only** dependency of `passkey` (a real virtual authenticator used

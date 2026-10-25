@@ -4,14 +4,17 @@ go 1.26.0
 
 require (
 	github.com/beevik/etree v1.7.0
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/crewjam/saml v0.5.1
 	github.com/descope/virtualwebauthn v1.0.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/mattermost/xml-roundtrip-validator v0.1.0
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/mojocn/base64Captcha v1.3.8
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/russellhaering/goxmldsig v1.6.1
+	golang.org/x/oauth2 v0.37.0
 )
 
 require (
