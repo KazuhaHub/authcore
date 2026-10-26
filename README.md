@@ -62,7 +62,9 @@ Each is an **orchestration layer over a protocol library**
 (`crewjam/saml`, `go-webauthn/webauthn`) — never an account model:
 
 - `saml` turns a validated SAML Response into a neutral `Assertion` (NameID,
-  attributes, session index). It never decides what a NameID or attribute
+  signed NameID qualifiers, attributes, session index). `NameQualifier`,
+  `SPNameQualifier` and `SPProvidedID` remain exactly as validated; missing
+  attributes stay empty. It never decides what a NameID or attribute
   means for your account model.
 - `oidc` validates an authorization-code flow into issuer/subject and neutral
   claims. Browser-bound persistence and account admission remain in the caller.
