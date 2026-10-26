@@ -40,6 +40,12 @@ type Assertion struct {
 	// IdP did not set one.
 	NameIDFormat string
 
+	// NameQualifier, SPNameQualifier and SPProvidedID preserve the signed
+	// NameID attributes. Callers decide their identity and service-provider scope.
+	NameQualifier   string
+	SPNameQualifier string
+	SPProvidedID    string
+
 	// SessionIndex is the AuthnStatement's SessionIndex, used to
 	// correlate a later Single Logout request with this session. Empty
 	// if the IdP did not send an AuthnStatement or left it blank.
@@ -126,6 +132,9 @@ func assertionFromCrewjam(a *crewjamsaml.Assertion, strictAttributes bool) (*Ass
 	if a.Subject != nil && a.Subject.NameID != nil {
 		out.NameID = a.Subject.NameID.Value
 		out.NameIDFormat = a.Subject.NameID.Format
+		out.NameQualifier = a.Subject.NameID.NameQualifier
+		out.SPNameQualifier = a.Subject.NameID.SPNameQualifier
+		out.SPProvidedID = a.Subject.NameID.SPProvidedID
 	}
 	if a.Conditions != nil {
 		out.NotBefore = a.Conditions.NotBefore
