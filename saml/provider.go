@@ -118,6 +118,11 @@ type Config struct {
 	// in SP metadata as both the signing and encryption KeyDescriptor.
 	Certificate *x509.Certificate
 
+	// SignAuthnRequests signs HTTP-Redirect requests with SHA-256. It requires a
+	// matching RSA (at least 2048 bits) or ECDSA (at least 256 bits) key pair.
+	// Trusted IdP metadata requiring signed requests enables this automatically.
+	SignAuthnRequests bool
+
 	// IDPMetadata is the parsed metadata of the IdP this Provider trusts.
 	// Fetching it, verifying its provenance, and refreshing it on a
 	// schedule (IdPs rotate signing certs) are all the caller's job —
@@ -278,6 +283,10 @@ func New(cfg Config) (*Provider, error) {
 	if (cfg.Key == nil) != (cfg.Certificate == nil) {
 		return nil, fmt.Errorf("saml: Config.Key and Config.Certificate must be set together")
 	}
+	signatureMethod, err := authnSigningMethod(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	nameIDFormat := cfg.NameIDFormat
 	if nameIDFormat == "" {
@@ -292,6 +301,7 @@ func New(cfg Config) (*Provider, error) {
 		IDPMetadata:       cfg.IDPMetadata,
 		AllowIDPInitiated: cfg.AllowIDPInitiated,
 		AuthnNameIDFormat: nameIDFormat,
+		SignatureMethod:   signatureMethod,
 	}
 
 	cache := cfg.ReplayCache
@@ -338,8 +348,8 @@ type AuthnRequest struct {
 
 // NewAuthnRequest builds an SP-initiated AuthnRequest and the URL to
 // redirect the browser to, using the HTTP-Redirect binding to the IdP and
-// requesting the HTTP-POST binding for the response. relayState is placed
-// on the redirect verbatim (RFC 6.4) and handed back by the IdP with the
+// requesting the HTTP-POST binding for the response. relayState is URL-encoded
+// on the redirect and handed back by the IdP with the
 // Response; a common pattern is to fold the AuthnRequest ID and a
 // post-login return path into it, but this package does not require any
 // particular shape.
@@ -351,11 +361,15 @@ func (p *Provider) NewAuthnRequest(relayState string) (*AuthnRequest, error) {
 	if idpURL == "" {
 		return nil, fmt.Errorf("saml: IdP metadata has no HTTP-Redirect SingleSignOnService")
 	}
+	endpoint, err := authnEndpoint(idpURL, relayState)
+	if err != nil {
+		return nil, err
+	}
 	req, err := p.sp.MakeAuthenticationRequest(idpURL, crewjamsaml.HTTPRedirectBinding, crewjamsaml.HTTPPostBinding)
 	if err != nil {
 		return nil, fmt.Errorf("saml: make authentication request: %w", err)
 	}
-	redirectURL, err := req.Redirect(relayState, p.sp)
+	redirectURL, err := authnRedirect(req, p.sp, endpoint, relayState)
 	if err != nil {
 		return nil, fmt.Errorf("saml: build redirect URL: %w", err)
 	}

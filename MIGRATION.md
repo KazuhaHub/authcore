@@ -411,6 +411,25 @@ rate and expiry window, or supply a durable store for restart/multi-instance use
 This supersedes the former earliest-expiry eviction behavior.
 
 
+## Signed SAML requests (unreleased)
+
+Set `saml.Config.SignAuthnRequests` to sign HTTP-Redirect requests with SHA-256.
+Trusted IdP metadata with `WantAuthnRequestsSigned=true` enables signing even
+when that option is false. Construction then requires a matching RSA key pair
+of at least 2048 bits or an ECDSA pair of at least 256 bits. SP metadata advertises
+the resulting signing policy. Existing configurations remain unsigned when
+neither the caller nor the IdP requires signing; a key used only for assertion
+decryption does not implicitly enable request signing.
+
+Pass raw RelayState to `NewAuthnRequest`, without pre-encoding it. It is now
+URL-encoded without adding query parameters and is limited to 80 bytes, as
+required by [SAML Bindings sections 3.4.3 and 3.4.4.1](https://docs.oasis-open.org/security/saml/v2.0/saml-bindings-2.0-os.pdf).
+Use a short opaque token backed by caller-owned state for larger payloads.
+Existing IdP endpoint query fields remain intact and outside the signed binding
+octets. Endpoints containing reserved SAML binding parameters are refused.
+ECDSA signatures use the fixed-width representation specified by
+[XML Signature 1.1](https://www.w3.org/TR/xmldsig-core1/#sec-ECDSA).
+
 ## OIDC authorization-code package (unreleased)
 
 The new `oidc` leaf adds protocol orchestration without changing the SAML,

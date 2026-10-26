@@ -66,6 +66,8 @@ Each is an **orchestration layer over a protocol library**
   `SPNameQualifier` and `SPProvidedID` remain exactly as validated; missing
   attributes stay empty. It never decides what a NameID or attribute
   means for your account model.
+  HTTP-Redirect requests can be signed with SHA-256, including when trusted IdP
+  metadata requires it; see the [migration notes](MIGRATION.md#signed-saml-requests-unreleased).
 - `oidc` validates an authorization-code flow into issuer/subject and neutral
   claims. Browser-bound persistence and account admission remain in the caller.
 - `passkey` runs a WebAuthn ceremony against an opaque, caller-supplied
