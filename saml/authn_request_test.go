@@ -30,11 +30,22 @@ func signedRequestConfig(t *testing.T, key crypto.Signer, cert *x509.Certificate
 func verifyAuthnSignature(t *testing.T, key crypto.PublicKey, target *url.URL) bool {
 	t.Helper()
 	query := target.Query()
-	message := "SAMLRequest=" + url.QueryEscape(query.Get("SAMLRequest"))
-	if _, present := query["RelayState"]; present {
-		message += "&RelayState=" + url.QueryEscape(query.Get("RelayState"))
+	// Verify the actual escaped octets, rather than normalizing through Query.
+	fields := map[string]string{}
+	for _, pair := range strings.Split(target.RawQuery, "&") {
+		name, _, _ := strings.Cut(pair, "=")
+		if name == "SAMLRequest" || name == "RelayState" || name == "SigAlg" {
+			if _, duplicate := fields[name]; duplicate {
+				return false
+			}
+			fields[name] = pair
+		}
 	}
-	message += "&SigAlg=" + url.QueryEscape(query.Get("SigAlg"))
+	message := fields["SAMLRequest"]
+	if relay, present := fields["RelayState"]; present {
+		message += "&" + relay
+	}
+	message += "&" + fields["SigAlg"]
 	signature, err := base64.StdEncoding.DecodeString(query.Get("Signature"))
 	if err != nil {
 		return false
@@ -105,6 +116,13 @@ func TestSignedAuthnRequestsUseSHA256AndBindingOctets(t *testing.T) {
 					target.RawQuery = query.Encode()
 					if !verifyAuthnSignature(t, cert.PublicKey, target) {
 						t.Fatal("endpoint query leaked into binding signature")
+					}
+					if relay != "" {
+						changed := *target
+						changed.RawQuery = strings.Replace(changed.RawQuery, "RelayState=opaque+", "RelayState=opaque%20", 1)
+						if changed.Query().Get("RelayState") != relay || changed.RawQuery == target.RawQuery || verifyAuthnSignature(t, cert.PublicKey, &changed) {
+							t.Fatal("signature did not cover the original escaped RelayState octets")
+						}
 					}
 					for _, name := range []string{"SAMLRequest", "RelayState", "SigAlg", "Signature"} {
 						changed := *target
