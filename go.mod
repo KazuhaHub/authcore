@@ -35,3 +35,7 @@ require (
 	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 )
+
+// Interim dependency fix proposed in crewjam/saml#674. Consumers must repeat
+// this pinned replacement in their main module; see saml/SECURITY-NOTES.md.
+replace github.com/crewjam/saml => github.com/openctemio/saml v0.5.2-0.20261106014128-2b3cdad337cd

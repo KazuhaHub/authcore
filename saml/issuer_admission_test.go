@@ -78,8 +78,8 @@ func TestSignedAmbiguousAssertionIdentityIsRejected(t *testing.T) {
 			}
 			if change == "foreign-nameid" {
 				parsed, err := provider.sp.ParseXMLResponse(raw, nil, url.URL{})
-				if err != nil || parsed.Subject == nil || parsed.Subject.NameID == nil || parsed.Subject.NameID.Value != idp.nameID {
-					t.Fatal("dependency did not reproduce foreign-namespace NameID admission", err)
+				if err == nil && parsed.Subject != nil && parsed.Subject.NameID != nil {
+					t.Fatal("dependency admitted a foreign-namespace NameID")
 				}
 			}
 			_, err = provider.ValidateResponseXML(context.Background(), raw, url.URL{}, nil)
