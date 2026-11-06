@@ -139,6 +139,9 @@ func (p *Provider) validate(ctx context.Context, decoded []byte, currentURL url.
 	if !cfg.AllowEncryptedAssertions && shape.hasEncryptedAssertion {
 		return nil, ErrEncryptedAssertionNotAllowed
 	}
+	if err := validatePlaintextIdentityShape(decoded); err != nil {
+		return nil, err
+	}
 
 	assertion, err := p.sp.ParseXMLResponse(decoded, possibleRequestIDs, currentURL)
 	if err != nil {
