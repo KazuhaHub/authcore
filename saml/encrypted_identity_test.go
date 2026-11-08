@@ -13,7 +13,7 @@ import (
 )
 
 func TestEncryptedAssertionIdentityAdmission(t *testing.T) {
-	for _, change := range []string{"valid", "foreign-nameid", "missing-subject", "missing-conditions", "missing-confirmation-data"} {
+	for _, change := range []string{"valid", "foreign-nameid", "missing-subject", "missing-conditions", "missing-confirmation-data", "legacy-key-transport"} {
 		t.Run(change, func(t *testing.T) {
 			sp := newTestSPMaterial(t, "encrypted-identity")
 			idp := newTestIdP(t, sp.entityID, sp.acsURL, sp.cert)
@@ -53,11 +53,12 @@ func TestEncryptedAssertionIdentityAdmission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Use an existing supported legacy transport for this identity
-			// regression. The fixture does not select production encryption
-			// policy; its outer signature remains RSA-SHA256.
-			encrypter := xmlenc.PKCS1v15()
-			encrypter.BlockCipher = xmlenc.AES128CBC
+			encrypter := xmlenc.OAEP_SHA256()
+			encrypter.BlockCipher = xmlenc.AES256GCM
+			if change == "legacy-key-transport" {
+				encrypter = xmlenc.PKCS1v15()
+				encrypter.BlockCipher = xmlenc.AES128CBC
+			}
 			encrypted, err := encrypter.Encrypt(sp.cert, plainBytes, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -102,7 +103,7 @@ func TestEncryptedAssertionIdentityAdmission(t *testing.T) {
 					t.Fatal("encrypted foreign-namespace NameID became an authenticated identity")
 				}
 			} else if err == nil {
-				t.Fatal("encrypted missing required element was admitted")
+				t.Fatal("encrypted invalid structure or legacy key transport was admitted")
 			}
 		})
 	}

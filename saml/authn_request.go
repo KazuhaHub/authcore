@@ -79,7 +79,7 @@ func authnRedirect(request *crewjamsaml.AuthnRequest, sp *crewjamsaml.ServicePro
 	// outside the signed octets required by SAML Bindings section 3.4.4.1.
 	unsigned := *sp
 	unsigned.SignatureMethod = ""
-	redirect, err := request.Redirect(url.QueryEscape(relay), &unsigned)
+	redirect, err := request.Redirect(relay, &unsigned)
 	if err != nil || sp.SignatureMethod == "" {
 		return redirect, err
 	}

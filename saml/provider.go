@@ -188,6 +188,8 @@ type Config struct {
 	// the deployments this package was built from use it, decryption is
 	// a padding-oracle-shaped attack surface, and TLS already covers the
 	// transport for the Web SSO profile.
+	// The dependency's default algorithm policy applies; this option does not
+	// enable legacy RSA1_5 key transport.
 	AllowEncryptedAssertions bool
 
 	// StrictAttributes rejects an assertion in which the same attribute
