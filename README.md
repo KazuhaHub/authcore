@@ -440,7 +440,7 @@ concern, not housekeeping.
 - **Security-sensitive libraries are pinned to the latest release** and are
   updated in their own pull request, never batched with unrelated bumps. This
   currently covers (at the versions go.mod pins):
-  - `github.com/crewjam/saml` **v0.5.1** — SAML orchestration (`saml`)
+  - `github.com/crewjam/saml` **v0.6.3** — SAML orchestration (`saml`)
   - `github.com/russellhaering/goxmldsig` **v1.6.1** — XML digital signature
     verification, a `crewjam/saml` dependency (`saml`)
   - `github.com/beevik/etree` **v1.7.0** — the XML tree `goxmldsig` verifies

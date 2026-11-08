@@ -3,9 +3,9 @@ module github.com/KazuhaHub/authcore
 go 1.26.0
 
 require (
-	github.com/beevik/etree v1.7.0
+	github.com/beevik/etree v1.8.1
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/crewjam/saml v0.5.1
+	github.com/crewjam/saml v0.6.3
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-webauthn/webauthn v0.18.2
@@ -35,7 +35,3 @@ require (
 	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 )
-
-// Interim dependency fix proposed in crewjam/saml#674. Consumers must repeat
-// this pinned replacement in their main module; see saml/SECURITY-NOTES.md.
-replace github.com/crewjam/saml => github.com/openctemio/saml v0.5.2-0.20261106014128-2b3cdad337cd

@@ -6,46 +6,48 @@ the dependency parser. It does not authenticate XML. Signature, destination,
 request, validity and replay checks still run on the original document.
 
 This hardening addresses the plaintext structural cases described in
-[GO-2026-6909](https://pkg.go.dev/vuln/GO-2026-6909). The advisory currently records
-no fixed dependency version. The pinned v0.5.1 source represents `Assertion.Issuer`
-as a value, whereas the advisory describes a nil-pointer dereference; that panic
-has not been reproduced here. Do not describe the preflight as a verified fix for
-the dependency or suppress vulnerability scanning on that basis.
+[GO-2026-6909](https://pkg.go.dev/vuln/GO-2026-6909). Encrypted assertions remain
+opaque to this preflight, so dependency-level validation is also required.
 
-Encrypted assertions are opaque to this preflight. The local module therefore
-pins the dependency-level proposal in [crewjam/saml#674](https://github.com/crewjam/saml/pull/674):
-`github.com/openctemio/saml v0.5.2-0.20261106014128-2b3cdad337cd`, exact Git commit
-`2b3cdad337cdd14eeeeec91cd4c7405d6ec590ba`. This is an unmerged third-party fork,
-not an official crewjam release. Its reviewed changes bind assertion elements to
-their namespaces and check missing optional pointers before use. The proposal is
-based on upstream `346540312f721498fc75e69637d9250dd89f230b`; the upstream JWT-v5
-transition is also present relative to v0.5.1. Dependencies retain their licenses.
+The module now selects official `github.com/crewjam/saml v0.6.3`, tag commit
+`c5725cd857625e4c1f6dbbe5e0b3822def94b581`, without a replacement. The namespace
+and nil-pointer repair was merged through
+[crewjam/saml#679](https://github.com/crewjam/saml/pull/679), which superseded
+the closed, unmerged [#674](https://github.com/crewjam/saml/pull/674). The
+dependency binds assertion fields to their namespaces, checks missing pointers,
+and requires bearer confirmation and audience restrictions. The original Issuer
+nil-pointer claim was not reproduced against v0.5.1, whose field is a value;
+the independently reproduced NameID admission and missing-Subject panic remain
+the concrete original controls. Dependencies retain their licenses.
 
 Regression tests verify normal and malformed plaintext responses with valid
 RSA-SHA256 signatures, and actual encrypted responses with a trusted signed outer
 Response. They require a valid encrypted identity to survive while foreign NameID
 cannot become an identity and missing Subject, Conditions or confirmation data
-is rejected without a panic. Encryption fixtures use the dependency's existing
-legacy RSA1_5/AES128-CBC support, not a new production policy. Its OAEP fixture
-emits a nonstandard digest URI rejected by the existing signature allowlist;
-that separate compatibility issue has not been repaired or allowed here.
+is rejected without a panic. Current positive fixtures use RSA-OAEP SHA-256 and
+AES-256-GCM. A separate signed encrypted fixture requires legacy RSA1_5 key
+transport to be refused by default; no legacy decrypter is registered. Enabling
+encrypted assertions does not enable that algorithm. The dependency now emits
+the standard OAEP digest URI, so the earlier fixture's digest-URI incompatibility
+does not require an allowlist exception.
 
-Go does not propagate a dependency module's `replace` directives. Every consumer,
-including NetHub, must repeat the exact pin in its main module and verify its own
-graph, checksums, scans and runtime before acceptance. This pin has not yet passed
-hosted CI or downstream deployment acceptance. Do not infer a complete repair
-from a clean vulnerability scan: the database may not map the original advisory
-to this fork. The independent signed/encrypted regressions and source audit remain
-required. No advisory ignore or scanner exception is added. Remove the replacement
-when an official release containing the reviewed fixes can pass the same checks.
+The new Redirect implementation escapes RelayState itself. Authcore passes the
+original value once, preserving both unsigned and independently verified
+RSA/ECDSA signed requests, endpoint query fields and reserved-parameter refusal.
 
-Local validation passed the authcore SAML package, including both signed and
-encrypted regressions. Running those encrypted negative cases against v0.5.1
-with the same authcore source reproduced foreign NameID admission and a missing
-Subject panic. The Linux-target source scan found no called vulnerabilities with
-the pin; this remains separate from source-level evidence. The upstream package
-suite under this graph rejected its XSW-7 and XSW-8 fixtures, but two tests failed
-because their exact expected error text differs with the selected XML signature
-library. They are not recorded as passing tests. A full local authcore test also
-failed Windows GeoIP mapped-file replacement/cleanup cases. Linux CI and downstream
-deployment validation are still required; no test or scanner failure is ignored.
+Consumers must remove their own interim fork replacement when adopting this
+version: Go does not propagate dependency replacements. They must verify the
+resolved official module, checksums, scans and actual runtime. Local SAML tests
+pass, including the genuine signed/encrypted controls and unsigned RelayState
+regression. Current-source hosted CI and downstream deployment remain acceptance
+gates. No advisory ignore or scanner exception is added.
+
+The interim fork and its evidence remain historical. Running its encrypted
+negative controls against v0.5.1 reproduced foreign NameID admission and a missing
+Subject panic. The interim Linux-target source scan found no called vulnerabilities;
+that result does not cover this dependency update. The old upstream package
+suite rejected its XSW-7 and XSW-8 fixtures, but two tests failed because their
+exact expected error text differed with the selected XML signature library.
+They are not recorded as passing tests. A full local authcore test also failed
+Windows GeoIP mapped-file replacement/cleanup cases. Linux CI and downstream
+deployment validation remain required; no test or scanner failure is ignored.
