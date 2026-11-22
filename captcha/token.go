@@ -131,12 +131,21 @@ type Result struct {
 	CData string
 	// ActionMismatch is true when VerifyExpect was given a non-empty
 	// Expect.Action and the provider's Action was different or missing.
-	// Always false from Verify.
+	// Always false from Verify, and also false when the provider itself
+	// rejected the token (its reply carries nothing worth comparing). Branch
+	// on Success only; see ErrorCodes for why the provider rejected a token.
 	ActionMismatch bool
 	// CDataMismatch is true when VerifyExpect was given a non-empty
 	// Expect.CData and the provider's CData was different or missing.
-	// Always false from Verify.
+	// Always false from Verify, and also false when the provider itself
+	// rejected the token (its reply carries nothing worth comparing). Branch
+	// on Success only; see ErrorCodes for why the provider rejected a token.
 	CDataMismatch bool
+
+	// providerOK is the provider's own verdict, before hostname pinning
+	// folds into Success. VerifyExpect uses it to tell a provider rejection
+	// from a pinning failure.
+	providerOK bool
 }
 
 // TokenOption configures a TokenVerifier built by NewTokenVerifier.
@@ -386,6 +395,7 @@ func (v *TokenVerifier) Verify(ctx context.Context, token, remoteIP string) (Res
 		ErrorCodes:  out.ErrorCodes,
 		Action:      out.Action,
 		CData:       out.CData,
+		providerOK:  out.Success,
 	}
 	if !result.Success {
 		return result, nil

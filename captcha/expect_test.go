@@ -94,10 +94,11 @@ func TestVerifyExpect_EmptyExpectEqualsVerify(t *testing.T) {
 	for _, body := range []map[string]any{
 		{"success": true, "action": "login", "cdata": "x", "hostname": "a.example.com"},
 		{"success": true},
+		{"success": true, "hostname": "evil.example.com"},
 		{"success": false, "error-codes": []string{"timeout-or-duplicate"}},
 	} {
 		stub := replyWith(t, body)
-		v := newVerifier(t, stub.srv.URL)
+		v := newVerifier(t, stub.srv.URL, captcha.WithAllowedHostnames("panel.example.com"))
 		want, err := v.Verify(context.Background(), "tok", "")
 		if err != nil {
 			t.Fatalf("Verify: %v", err)
@@ -107,7 +108,7 @@ func TestVerifyExpect_EmptyExpectEqualsVerify(t *testing.T) {
 			t.Fatalf("VerifyExpect: %v", err)
 		}
 		if got.Success != want.Success || got.Action != want.Action || got.CData != want.CData ||
-			got.Hostname != want.Hostname || got.ActionMismatch || got.CDataMismatch ||
+			got.Hostname != want.Hostname || got.HostnameMismatch != want.HostnameMismatch || got.ActionMismatch || got.CDataMismatch ||
 			len(got.ErrorCodes) != len(want.ErrorCodes) {
 			t.Fatalf("VerifyExpect(Expect{}) = %+v; Verify = %+v", got, want)
 		}
@@ -167,5 +168,67 @@ func TestVerifyExpect_ErrorReturnedUnchanged(t *testing.T) {
 	}
 	if res.Success || res.ActionMismatch || res.CDataMismatch {
 		t.Fatalf("result = %+v; want zero Result", res)
+	}
+}
+
+func TestVerifyExpect_EmptyToken_NoNetworkCall(t *testing.T) {
+	called := false
+	stub := newSiteverifyStub(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		jsonReply(t, w, 0, map[string]any{"success": true, "action": "login"})
+	})
+	res, err := newVerifier(t, stub.srv.URL).VerifyExpect(context.Background(), "", "", captcha.Expect{Action: "login"})
+	if err != nil {
+		t.Fatalf("VerifyExpect: %v", err)
+	}
+	if res.Success || res.ActionMismatch || res.CDataMismatch || called {
+		t.Fatalf("result = %+v, called = %v; want a plain rejection with no network call", res, called)
+	}
+}
+
+func TestVerifyExpect_PinningWithoutReportedHostname(t *testing.T) {
+	stub := replyWith(t, map[string]any{"success": true, "action": "login"})
+	v := newVerifier(t, stub.srv.URL, captcha.WithAllowedHostnames("panel.example.com"))
+
+	res, err := v.VerifyExpect(context.Background(), "tok", "", captcha.Expect{Action: "login"})
+	if err != nil || !res.Success || res.HostnameMismatch {
+		t.Fatalf("res, err = %+v, %v; want success (pinning skips an unreported hostname)", res, err)
+	}
+	res, err = v.VerifyExpect(context.Background(), "tok", "", captcha.Expect{Action: "other"})
+	if err != nil || res.Success || !res.ActionMismatch || res.HostnameMismatch {
+		t.Fatalf("res, err = %+v, %v; want only ActionMismatch", res, err)
+	}
+}
+
+func TestVerifyExpect_ProvidersWithoutFieldsNeverSatisfy(t *testing.T) {
+	stub := replyWith(t, map[string]any{"success": true})
+	for _, p := range []captcha.Provider{captcha.ProviderRecaptcha, captcha.ProviderHCaptcha} {
+		v, err := captcha.NewTokenVerifier(p, testSecret, captcha.WithEndpoint(stub.srv.URL))
+		if err != nil {
+			t.Fatalf("NewTokenVerifier(%s): %v", p, err)
+		}
+		res, err := v.VerifyExpect(context.Background(), "tok", "", captcha.Expect{CData: "x"})
+		if err != nil || res.Success || !res.CDataMismatch {
+			t.Fatalf("%s: res, err = %+v, %v; want CDataMismatch failure", p, res, err)
+		}
+		res, err = v.VerifyExpect(context.Background(), "tok", "", captcha.Expect{Action: "login"})
+		if err != nil || res.Success || !res.ActionMismatch {
+			t.Fatalf("%s: res, err = %+v, %v; want ActionMismatch failure", p, res, err)
+		}
+	}
+}
+
+// A provider rejection must stay a plain rejection even if hostname pinning
+// would also fail: the provider's own verdict, not Success, decides whether
+// expectations are evaluated.
+func TestVerifyExpect_UsesProviderVerdictNotSuccess(t *testing.T) {
+	stub := replyWith(t, map[string]any{"success": false, "hostname": "evil.example.com", "action": "signup", "error-codes": []string{"timeout-or-duplicate"}})
+	v := newVerifier(t, stub.srv.URL, captcha.WithAllowedHostnames("panel.example.com"))
+	res, err := v.VerifyExpect(context.Background(), "tok", "", captcha.Expect{Action: "login"})
+	if err != nil {
+		t.Fatalf("VerifyExpect: %v", err)
+	}
+	if res.Success || res.ActionMismatch || res.HostnameMismatch || len(res.ErrorCodes) != 1 {
+		t.Fatalf("result = %+v; want a plain provider rejection with ErrorCodes", res)
 	}
 }

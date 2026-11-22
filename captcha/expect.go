@@ -33,26 +33,28 @@ func (v *TokenVerifier) VerifyExpect(ctx context.Context, token, remoteIP string
 	if err != nil {
 		return result, err
 	}
-	// Success is false here either because the provider rejected the token
-	// or because hostname pinning did; only the latter means the provider
-	// accepted it and its action and cdata are worth comparing.
-	if !result.Success && !result.HostnameMismatch {
+	// If the provider itself rejected the token its reply carries no
+	// meaningful action or cdata; report only its verdict (see ErrorCodes).
+	if !result.providerOK {
 		return result, nil
 	}
 
-	if want.Action != "" && !equalSecret(result.Action, want.Action) {
+	if want.Action != "" && !equalValue(result.Action, want.Action) {
 		result.Success = false
 		result.ActionMismatch = true
 	}
-	if want.CData != "" && !equalSecret(result.CData, want.CData) {
+	if want.CData != "" && !equalValue(result.CData, want.CData) {
 		result.Success = false
 		result.CDataMismatch = true
 	}
 	return result, nil
 }
 
-// equalSecret compares in constant time. An empty got never equals a
-// non-empty want, which is what makes a missing value fail closed.
-func equalSecret(got, want string) bool {
+// equalValue compares got and want. subtle.ConstantTimeCompare is constant
+// time only for equal lengths, which is acceptable here: the values are not
+// secrets, so the comparison only avoids an easy timing oracle on cdata
+// content. An empty got never equals a non-empty want, which is what makes
+// a missing value fail closed.
+func equalValue(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }

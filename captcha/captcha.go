@@ -22,8 +22,9 @@
 // token.go, as TokenVerifier. Turnstile and reCAPTCHA v3 also echo back the
 // widget's action (Turnstile additionally echoes cdata), and the providers'
 // guidance is to validate them server-side; TokenVerifier.VerifyExpect does
-// that, failing closed when an expected value is missing. The two share a package because they are both
-// "captcha verification" from a caller's point of view, but neither depends
+// that, failing closed when an expected value is missing. The image captcha
+// and the token verifier share a package because they are both "captcha
+// verification" from a caller's point of view, but neither depends
 // on the other's types.
 package captcha
 

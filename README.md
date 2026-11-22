@@ -193,7 +193,9 @@ if err != nil {
 	// network, status or decode failure: the check did not complete
 }
 if !res.Success {
-	// res.ActionMismatch, res.CDataMismatch and res.HostnameMismatch say why
+	// If the provider rejected the token, the reason is in res.ErrorCodes
+	// and every mismatch flag is false. Otherwise res.HostnameMismatch,
+	// res.ActionMismatch and res.CDataMismatch say which check failed.
 }
 ```
 
