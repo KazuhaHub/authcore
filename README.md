@@ -175,6 +175,28 @@ func main() {
 }
 ```
 
+Third-party token captchas (Turnstile, reCAPTCHA, hCaptcha) go through
+`captcha.TokenVerifier`. Turnstile returns the widget's `action` and `cdata`
+and reCAPTCHA v3 returns `action`; providers recommend validating them
+server-side, which `VerifyExpect` does. An empty field is not checked, and a
+non-empty one fails if the provider returned a different value or none, so
+reCAPTCHA v2 and hCaptcha can never satisfy an expectation.
+
+```go
+v, err := captcha.NewTokenVerifier(captcha.ProviderTurnstile, secret,
+	captcha.WithAllowedHostnames("panel.example.com"))
+if err != nil {
+	panic(err)
+}
+res, err := v.VerifyExpect(ctx, token, remoteIP, captcha.Expect{Action: "login", CData: sessionID})
+if err != nil {
+	// network, status or decode failure: the check did not complete
+}
+if !res.Success {
+	// res.ActionMismatch, res.CDataMismatch and res.HostnameMismatch say why
+}
+```
+
 ### `geoip`
 
 ```go
