@@ -19,8 +19,12 @@
 // captcha (Cloudflare Turnstile, Google reCAPTCHA, hCaptcha) is a different
 // mechanism — an HTTP call to that provider's siteverify endpoint, plus
 // hostname pinning against the result — and lives alongside this in
-// token.go, as TokenVerifier. The two share a package because they are both
-// "captcha verification" from a caller's point of view, but neither depends
+// token.go, as TokenVerifier. Turnstile and reCAPTCHA v3 also echo back the
+// widget's action (Turnstile additionally echoes cdata), and the providers'
+// guidance is to validate them server-side; TokenVerifier.VerifyExpect does
+// that, failing closed when an expected value is missing. The image captcha
+// and the token verifier share a package because they are both "captcha
+// verification" from a caller's point of view, but neither depends
 // on the other's types.
 package captcha
 

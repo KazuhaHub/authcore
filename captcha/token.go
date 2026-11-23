@@ -119,6 +119,33 @@ type Result struct {
 	// bad/expired token. See TokenVerifier's WithAllowedHostnames doc for
 	// what "allow list" means here, including its empty-list behavior.
 	HostnameMismatch bool
+	// Action is the action name the provider echoes back from the widget.
+	// Cloudflare Turnstile and Google reCAPTCHA v3 return it; reCAPTCHA v2
+	// and hCaptcha do not, so it is "" for them. Verify only reports it;
+	// use VerifyExpect to require a specific value.
+	Action string
+	// CData is the customer data the provider echoes back from the widget.
+	// Only Cloudflare Turnstile returns it; every other provider leaves it
+	// "". Verify only reports it; use VerifyExpect to require a specific
+	// value.
+	CData string
+	// ActionMismatch is true when VerifyExpect was given a non-empty
+	// Expect.Action and the provider's Action was different or missing.
+	// Always false from Verify, and also false when the provider itself
+	// rejected the token (its reply carries nothing worth comparing). Branch
+	// on Success only; see ErrorCodes for why the provider rejected a token.
+	ActionMismatch bool
+	// CDataMismatch is true when VerifyExpect was given a non-empty
+	// Expect.CData and the provider's CData was different or missing.
+	// Always false from Verify, and also false when the provider itself
+	// rejected the token (its reply carries nothing worth comparing). Branch
+	// on Success only; see ErrorCodes for why the provider rejected a token.
+	CDataMismatch bool
+
+	// providerOK is the provider's own verdict, before hostname pinning
+	// folds into Success. VerifyExpect uses it to tell a provider rejection
+	// from a pinning failure.
+	providerOK bool
 }
 
 // TokenOption configures a TokenVerifier built by NewTokenVerifier.
@@ -296,6 +323,8 @@ type siteverifyResponse struct {
 	Hostname    string   `json:"hostname"`
 	ChallengeTS string   `json:"challenge_ts"`
 	ErrorCodes  []string `json:"error-codes"`
+	Action      string   `json:"action"`
+	CData       string   `json:"cdata"`
 }
 
 // Verify POSTs token (and remoteIP, if given) to the provider's siteverify
@@ -364,6 +393,9 @@ func (v *TokenVerifier) Verify(ctx context.Context, token, remoteIP string) (Res
 		Hostname:    out.Hostname,
 		ChallengeTS: out.ChallengeTS,
 		ErrorCodes:  out.ErrorCodes,
+		Action:      out.Action,
+		CData:       out.CData,
+		providerOK:  out.Success,
 	}
 	if !result.Success {
 		return result, nil
