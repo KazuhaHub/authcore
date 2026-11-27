@@ -58,7 +58,10 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	crewjamsaml "github.com/crewjam/saml"
 )
@@ -354,6 +357,40 @@ type AuthnRequest struct {
 // post-login return path into it, but this package does not require any
 // particular shape.
 func (p *Provider) NewAuthnRequest(relayState string) (*AuthnRequest, error) {
+	return p.NewAuthnRequestWith(relayState, AuthnOptions{})
+}
+
+// AuthnOptions are the optional parts of an SP-initiated AuthnRequest.
+type AuthnOptions struct {
+	// SubjectHint is put in the request's <Subject><NameID> (SAML Core
+	// 3.4.1), for example the address a person typed on a sign-in page that
+	// routes by email domain. An IdP that honours it authenticates only that
+	// subject (it may prefill its own form, or fail the request for another
+	// one), so send it only when the IdP's NameID is the value the person
+	// typed. It is never trusted on the way back: the Response's subject is
+	// validated as for any request. A value that is empty, longer than 256
+	// bytes, or has a control character is not sent.
+	SubjectHint string
+	// SubjectHintFormat is the hint's NameID Format;
+	// crewjamsaml.EmailAddressNameIDFormat when empty.
+	SubjectHintFormat crewjamsaml.NameIDFormat
+}
+
+// subjectHint is the request's Subject for opts, or nil.
+func (opts AuthnOptions) subjectHint() *crewjamsaml.Subject {
+	h := opts.SubjectHint
+	if h == "" || len(h) > 256 || strings.ContainsFunc(h, unicode.IsControl) || !utf8.ValidString(h) {
+		return nil
+	}
+	format := opts.SubjectHintFormat
+	if format == "" {
+		format = crewjamsaml.EmailAddressNameIDFormat
+	}
+	return &crewjamsaml.Subject{NameID: &crewjamsaml.NameID{Format: string(format), Value: h}}
+}
+
+// NewAuthnRequestWith is NewAuthnRequest with the optional parts in opts.
+func (p *Provider) NewAuthnRequestWith(relayState string, opts AuthnOptions) (*AuthnRequest, error) {
 	if p == nil || p.sp == nil || p.sp.IDPMetadata == nil {
 		return nil, ErrNotConfigured
 	}
@@ -369,6 +406,7 @@ func (p *Provider) NewAuthnRequest(relayState string) (*AuthnRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("saml: make authentication request: %w", err)
 	}
+	req.Subject = opts.subjectHint()
 	redirectURL, err := authnRedirect(req, p.sp, endpoint, relayState)
 	if err != nil {
 		return nil, fmt.Errorf("saml: build redirect URL: %w", err)
